@@ -34,7 +34,7 @@ func NewSmartPromptOpt(cfg Config) (*SmartPromptOptPlugin, error) {
 
 	var pc PineconeClient
 	if cfg.Pinecone.Enabled {
-		pc = NewPineconeHTTPClient(cfg.Pinecone)
+		pc = NewPineconeSDKClient(cfg.Pinecone)
 	}
 
 	p := &SmartPromptOptPlugin{
