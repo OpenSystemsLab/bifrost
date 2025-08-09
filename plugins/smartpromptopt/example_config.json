@@ -1,0 +1,43 @@
+{
+  "enabled": true,
+  "tokenBudget": 2000,
+  "maxHistoryTurns": 12,
+  "strengthenInstructions": true,
+  "instructionPrefix": "You are a concise assistant. Answer tersely, avoid redundancy.",
+  "providerDefaults": {
+    "openai:gpt-4o": {
+      "temperature": 0.2,
+      "topP": 0.9
+    },
+    "anthropic:claude-3-sonnet-20240229": {
+      "temperature": 0.3
+    },
+    "openai:gpt-4o-mini": {
+      "temperature": 0.5,
+      "topP": 0.95
+    }
+  },
+  "semanticCompression": {
+    "enabled": true,
+    "chunkSize": 2000,
+    "compressThresholdTokens": 1800
+  },
+  "pinecone": {
+    "enabled": true,
+    "apiKeyEnv": "PINECONE_API_KEY",
+    "environment": "us-east-1-aws",
+    "indexName": "bifrost-smart",
+    "namespace": "default",
+    "topK": 5,
+    "upsertOnLargeInputs": true,
+    "metadataRedaction": {
+      "emails": true,
+      "phoneNumbers": true,
+      "secretsPatterns": ["api[_-]?key", "password", "secret", "token"]
+    },
+    "timeoutMs": 2000
+  },
+  "advancedLogging": {
+    "ringSize": 100
+  }
+}

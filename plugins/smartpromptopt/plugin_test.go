@@ -11,7 +11,7 @@ func TestPreHook_NormalizationAndPrefixAndTrim(t *testing.T) {
 	prefix := "You are concise. Answer tersely."
 	cfg := Config{
 		Enabled:                true,
-		TokenBudget:            10, // small to trigger trimming branch, but we rely on MaxHistoryTurns trim
+		TokenBudget:            100, // reasonable budget to avoid triggering the second trim
 		MaxHistoryTurns:        1,
 		StrengthenInstructions: true,
 		InstructionPrefix:      prefix,
@@ -24,10 +24,13 @@ func TestPreHook_NormalizationAndPrefixAndTrim(t *testing.T) {
 	}
 
 	// Build a chat request with extra whitespace and multiple turns
+	helloContent := "  Hello\n\nWorld  "
+	replyContent := "Some reply"
+	anotherContent := "Another question"
 	msgs := []schemas.BifrostMessage{
-		{Role: schemas.ModelChatMessageRoleUser, Content: "  Hello\n\nWorld  "},
-		{Role: schemas.ModelChatMessageRoleAssistant, Content: "Some reply"},
-		{Role: schemas.ModelChatMessageRoleUser, Content: "Another question"},
+		{Role: schemas.ModelChatMessageRoleUser, Content: schemas.MessageContent{ContentStr: &helloContent}},
+		{Role: schemas.ModelChatMessageRoleAssistant, Content: schemas.MessageContent{ContentStr: &replyContent}},
+		{Role: schemas.ModelChatMessageRoleUser, Content: schemas.MessageContent{ContentStr: &anotherContent}},
 	}
 	req := &schemas.BifrostRequest{
 		Provider: schemas.OpenAI,
@@ -49,18 +52,34 @@ func TestPreHook_NormalizationAndPrefixAndTrim(t *testing.T) {
 	if req.Input.ChatCompletionInput == nil || len(*req.Input.ChatCompletionInput) == 0 {
 		t.Fatalf("chat messages missing after prehook")
 	}
+	
+	// Debug: print all messages
+	msgsAfter := *req.Input.ChatCompletionInput
+	t.Logf("Messages after prehook (count=%d):", len(msgsAfter))
+	for i, m := range msgsAfter {
+		content := "<nil>"
+		if m.Content.ContentStr != nil {
+			content = *m.Content.ContentStr
+		}
+		t.Logf("  [%d] Role=%s, Content=%q", i, m.Role, content)
+	}
+	
 	got0 := (*req.Input.ChatCompletionInput)[0]
 	if got0.Role != schemas.ModelChatMessageRoleSystem {
 		t.Fatalf("expected first message to be system, got role=%s", got0.Role)
 	}
-	if got0.Content != prefix {
-		t.Fatalf("expected prefix content, got: %q", got0.Content)
+	if got0.Content.ContentStr == nil || *got0.Content.ContentStr != prefix {
+		content := "<nil>"
+		if got0.Content.ContentStr != nil {
+			content = *got0.Content.ContentStr
+		}
+		t.Fatalf("expected prefix content %q, got: %q", prefix, content)
 	}
 
-	// Expect history trimmed to MaxHistoryTurns + 1 for the injected system? Here we only guarantee last user/assistant kept after prefix.
-	// Given MaxHistoryTurns=1, we expect 1 original message plus the system prefix = 2 total now.
-	if l := len(*req.Input.ChatCompletionInput); l < 2 {
-		t.Fatalf("expected at least 2 messages (system + 1 trimmed original), got %d", l)
+	// With MaxHistoryTurns=1, we trim to the last 1 message BEFORE adding the prefix
+	// So we expect 2 messages: system prefix + the last original message
+	if l := len(*req.Input.ChatCompletionInput); l != 2 {
+		t.Fatalf("expected exactly 2 messages (system + 1 trimmed original), got %d", l)
 	}
 
 	// Ensure whitespace collapsed in remaining messages
@@ -68,9 +87,13 @@ func TestPreHook_NormalizationAndPrefixAndTrim(t *testing.T) {
 		if i == 0 { // skip system
 			continue
 		}
-		if m.Content != "Hello World" && m.Content != "Some reply" && m.Content != "Another question" {
-			// We don't know which message remains after trimming, but collapsed whitespace should remove double newlines
-			// If it is the first user message, expect "Hello World"
+		if m.Content.ContentStr != nil {
+			content := *m.Content.ContentStr
+			// Check that whitespace was properly collapsed
+			if content != "Hello World" && content != "Some reply" && content != "Another question" {
+				// We expect one of the normalized messages
+				t.Errorf("unexpected message content after normalization: %q", content)
+			}
 		}
 	}
 }

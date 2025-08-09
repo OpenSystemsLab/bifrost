@@ -2,9 +2,16 @@ package smartpromptopt
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+)
+
+// Default configuration values
+const (
+	DefaultChunkSize      = 2000
+	DefaultTopK           = 5
+	DefaultTimeoutMs      = 2000
+	DefaultTokensPerChar  = 4  // Crude approximation: 1 token ≈ 4 characters
 )
 
 type ModelDefaults struct {
@@ -54,11 +61,15 @@ type Config struct {
 func (c *Config) Validate() error {
 	if c.SemanticCompression.Enabled {
 		if c.SemanticCompression.ChunkSize <= 0 {
-			c.SemanticCompression.ChunkSize = 2000
+			c.SemanticCompression.ChunkSize = DefaultChunkSize
 		}
 		if c.Pinecone.Enabled {
-			if c.Pinecone.TopK <= 0 { c.Pinecone.TopK = 5 }
-			if c.Pinecone.TimeoutMs <= 0 { c.Pinecone.TimeoutMs = int((2 * time.Second).Milliseconds()) }
+			if c.Pinecone.TopK <= 0 { 
+				c.Pinecone.TopK = DefaultTopK 
+			}
+			if c.Pinecone.TimeoutMs <= 0 { 
+				c.Pinecone.TimeoutMs = DefaultTimeoutMs 
+			}
 			if c.Pinecone.IndexName == "" {
 				return fmt.Errorf("pinecone.index_name is required when Pinecone is enabled")
 			}

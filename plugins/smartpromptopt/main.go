@@ -18,9 +18,9 @@ const (
 // Focus: prompt improvement and cost reduction via PreHook.
 // PostHook is minimal (metrics hook point).
 type SmartPromptOptPlugin struct {
-	cfg      Config
-	pc       PineconeClient // optional, nil if disabled
-	logger   schemas.Logger // optional, may be nil
+	cfg       Config
+	pc        *PineconeSDKClient // optional, nil if disabled
+	logger    schemas.Logger     // optional, may be nil
 	estimator TokenEstimator
 
 	// ring buffer for last N debug decisions (optional)
@@ -32,16 +32,20 @@ func NewSmartPromptOpt(cfg Config) (*SmartPromptOptPlugin, error) {
 		return nil, fmt.Errorf("invalid smart_prompt_opt config: %w", err)
 	}
 
-	var pc PineconeClient
+	var pc *PineconeSDKClient
 	if cfg.Pinecone.Enabled {
-		pc = NewPineconeSDKClient(cfg.Pinecone)
+		var err error
+		pc, err = NewPineconeSDKClient(cfg.Pinecone)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pinecone client: %w", err)
+		}
 	}
 
 	p := &SmartPromptOptPlugin{
 		cfg:       cfg,
 		pc:        pc,
 		logger:    cfg.Logger,
-		estimator: DefaultEstimator{},
+		estimator: NewDefaultEstimator(0), // Use default chars-per-token ratio
 	}
 	if cfg.AdvancedLogging.RingSize > 0 {
 		p.ring = NewRingBuffer[string](cfg.AdvancedLogging.RingSize)
@@ -131,7 +135,7 @@ func (p *SmartPromptOptPlugin) logf(level schemas.LogLevel, corrID string, forma
 	case schemas.LogLevelWarn:
 		p.logger.Warn(msg)
 	case schemas.LogLevelError:
-		p.logger.Error(fmt.Errorf(msg))
+		p.logger.Error(fmt.Errorf("%s", msg))
 	}
 }
 
@@ -155,7 +159,20 @@ func (p *SmartPromptOptPlugin) normalizeRequest(req *schemas.BifrostRequest) str
 	if req.Input.ChatCompletionInput != nil {
 		msgs := *req.Input.ChatCompletionInput
 		for i := range msgs {
-			msgs[i].Content = strings.TrimSpace(collapseWhitespace(msgs[i].Content))
+			// Handle content normalization based on type
+			if msgs[i].Content.ContentStr != nil {
+				// Normalize string content
+				normalized := strings.TrimSpace(collapseWhitespace(*msgs[i].Content.ContentStr))
+				msgs[i].Content.ContentStr = &normalized
+			} else if msgs[i].Content.ContentBlocks != nil {
+				// Normalize text blocks
+				for j, block := range *msgs[i].Content.ContentBlocks {
+					if block.Text != nil {
+						normalized := strings.TrimSpace(collapseWhitespace(*block.Text))
+						(*msgs[i].Content.ContentBlocks)[j].Text = &normalized
+					}
+				}
+			}
 		}
 		// Trim history
 		if p.cfg.MaxHistoryTurns > 0 && len(msgs) > p.cfg.MaxHistoryTurns {
@@ -163,24 +180,35 @@ func (p *SmartPromptOptPlugin) normalizeRequest(req *schemas.BifrostRequest) str
 			summary = append(summary, "history_trim")
 		}
 		req.Input.ChatCompletionInput = &msgs
-		if len(msgs) > 0 { summary = append(summary, "chat") }
+		if len(msgs) > 0 {
+			summary = append(summary, "chat")
+		}
 	}
 	return strings.Join(summary, ",")
 }
 
 func (p *SmartPromptOptPlugin) applyInstructionPrefix(req *schemas.BifrostRequest) bool {
 	prefix := strings.TrimSpace(p.cfg.InstructionPrefix)
-	if prefix == "" { return false }
+	if prefix == "" {
+		return false
+	}
 	// Avoid double-applying if already present at start of first system/user message
 	already := false
 	if req.Input.ChatCompletionInput != nil {
 		msgs := *req.Input.ChatCompletionInput
 		if len(msgs) > 0 {
-			first := msgs[0].Content
-			if strings.HasPrefix(first, prefix) { already = true }
+			// Check if first message already has the prefix
+			if msgs[0].Content.ContentStr != nil && strings.HasPrefix(*msgs[0].Content.ContentStr, prefix) {
+				already = true
+			}
 		}
 		if !already {
-			sys := schemas.BifrostMessage{Role: schemas.ModelChatMessageRoleSystem, Content: prefix}
+			sys := schemas.BifrostMessage{
+				Role: schemas.ModelChatMessageRoleSystem,
+				Content: schemas.MessageContent{
+					ContentStr: &prefix,
+				},
+			}
 			msgs = append([]schemas.BifrostMessage{sys}, msgs...)
 			req.Input.ChatCompletionInput = &msgs
 			return true
@@ -201,7 +229,9 @@ func (p *SmartPromptOptPlugin) applyProviderDefaults(req *schemas.BifrostRequest
 		req.Params = &schemas.ModelParameters{}
 	}
 	md, ok := p.cfg.ProviderDefaults[string(req.Provider)+":"+req.Model]
-	if !ok { return }
+	if !ok {
+		return
+	}
 	if req.Params.Temperature == nil && md.Temperature != nil {
 		req.Params.Temperature = md.Temperature
 	}
@@ -215,26 +245,28 @@ func (p *SmartPromptOptPlugin) estimateTokens(req *schemas.BifrostRequest) int {
 }
 
 func (p *SmartPromptOptPlugin) compressWithPinecone(ctx context.Context, req *schemas.BifrostRequest) (summary string, meta map[string]any) {
-	if p.pc == nil { return "", nil }
-	// Collect text
-	var text string
-	if req.Input.TextCompletionInput != nil {
-		text = *req.Input.TextCompletionInput
+	if p.pc == nil {
+		return "", nil
 	}
-	if req.Input.ChatCompletionInput != nil {
-		for _, m := range *req.Input.ChatCompletionInput {
-			text += "\n" + m.Content
-		}
-	}
+
+	// Collect all text from the request
+	text := collectRequestText(req)
 	text = strings.TrimSpace(text)
-	if text == "" { return "", nil }
+	if text == "" {
+		return "", nil
+	}
 
 	chunks := ChunkByRune(text, p.cfg.SemanticCompression.ChunkSize)
 	if p.cfg.Pinecone.UpsertOnLargeInputs {
 		_ = p.pc.UpsertTexts(ctx, chunks, map[string]string{"source": "smart_prompt_opt"})
 	}
-	q := p.pc.QueryByText(ctx, text, p.cfg.Pinecone.TopK)
-	if len(q) == 0 { return "", nil }
+	q, err := p.pc.QueryByText(ctx, text, p.cfg.Pinecone.TopK)
+	if err != nil {
+		return "", nil
+	}
+	if len(q) == 0 {
+		return "", nil
+	}
 	// Summarize matches as compact bullets
 	b := &strings.Builder{}
 	b.WriteString("Context Summary (retrieved):\n")
@@ -245,16 +277,29 @@ func (p *SmartPromptOptPlugin) compressWithPinecone(ctx context.Context, req *sc
 }
 
 func (p *SmartPromptOptPlugin) injectSummary(req *schemas.BifrostRequest, summary string, meta map[string]any) {
-	msg := schemas.BifrostMessage{Role: schemas.ModelChatMessageRoleSystem, Content: summary}
+	msg := schemas.BifrostMessage{
+		Role: schemas.ModelChatMessageRoleSystem,
+		Content: schemas.MessageContent{
+			ContentStr: &summary,
+		},
+	}
 	if req.Input.ChatCompletionInput != nil {
 		msgs := *req.Input.ChatCompletionInput
-		req.Input.ChatCompletionInput = &append([]schemas.BifrostMessage{msg}, msgs...)
+		// Create a new slice with the summary message first
+		newMsgs := append([]schemas.BifrostMessage{msg}, msgs...)
+		req.Input.ChatCompletionInput = &newMsgs
 		return
 	}
 	// convert text to chat form when necessary
 	if req.Input.TextCompletionInput != nil {
 		t := *req.Input.TextCompletionInput
-		msgs := []schemas.BifrostMessage{msg, schemas.BifrostMessage{Role: schemas.ModelChatMessageRoleUser, Content: t}}
+		userMsg := schemas.BifrostMessage{
+			Role: schemas.ModelChatMessageRoleUser,
+			Content: schemas.MessageContent{
+				ContentStr: &t,
+			},
+		}
+		msgs := []schemas.BifrostMessage{msg, userMsg}
 		req.Input.ChatCompletionInput = &msgs
 		req.Input.TextCompletionInput = nil
 	}
@@ -286,8 +331,12 @@ func dedupeParagraphs(s string) string {
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		pp := strings.TrimSpace(p)
-		if pp == "" { continue }
-		if _, ok := seen[pp]; ok { continue }
+		if pp == "" {
+			continue
+		}
+		if _, ok := seen[pp]; ok {
+			continue
+		}
 		seen[pp] = struct{}{}
 		out = append(out, pp)
 	}
@@ -295,16 +344,37 @@ func dedupeParagraphs(s string) string {
 }
 
 func isEmptyRequest(req *schemas.BifrostRequest) bool {
-	if req == nil { return true }
+	if req == nil {
+		return true
+	}
 	if req.Input.TextCompletionInput != nil {
-		if strings.TrimSpace(*req.Input.TextCompletionInput) == "" { return true }
+		if strings.TrimSpace(*req.Input.TextCompletionInput) == "" {
+			return true
+		}
 	}
 	if req.Input.ChatCompletionInput != nil {
 		msgs := *req.Input.ChatCompletionInput
-		if len(msgs) == 0 { return true }
+		if len(msgs) == 0 {
+			return true
+		}
 		allEmpty := true
 		for _, m := range msgs {
-			if strings.TrimSpace(m.Content) != "" { allEmpty = false; break }
+			// Check if message has non-empty content
+			if m.Content.ContentStr != nil && strings.TrimSpace(*m.Content.ContentStr) != "" {
+				allEmpty = false
+				break
+			} else if m.Content.ContentBlocks != nil {
+				// Check if any text block has content
+				for _, block := range *m.Content.ContentBlocks {
+					if block.Text != nil && strings.TrimSpace(*block.Text) != "" {
+						allEmpty = false
+						break
+					}
+				}
+				if !allEmpty {
+					break
+				}
+			}
 		}
 		return allEmpty
 	}
@@ -315,4 +385,3 @@ func getCorrelationID(ctx context.Context) string {
 	// placeholder: if context has a value, derive from it; else timestamp
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
-

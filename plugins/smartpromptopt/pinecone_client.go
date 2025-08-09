@@ -10,108 +10,131 @@ import (
 	pinecone "github.com/pinecone-io/go-pinecone/v4/pinecone"
 )
 
-// pineconeSDKClient is an implementation of PineconeClient using go-pinecone SDK v4.
-type pineconeSDKClient struct {
-	cfg   PineconeConfig
-	cli   *pinecone.Client
-	index *pinecone.Index
+type PineconeSDKClient struct {
+	cfg    PineconeConfig
+	client *pinecone.Client
+	index  *pinecone.IndexConnection
 }
 
-// NewPineconeSDKClient creates a new Pinecone client using the SDK.
-// Falls back to stub client if API key is not available.
-func NewPineconeSDKClient(cfg PineconeConfig) PineconeClient {
+type SearchResult struct {
+	ID       string
+	Score    float64
+	Text     string
+	Metadata map[string]string
+}
+
+func NewPineconeSDKClient(cfg PineconeConfig) (*PineconeSDKClient, error) {
 	apiKey := os.Getenv(cfg.ApiKeyEnv)
 	if apiKey == "" {
-		// Fallback to stub behavior if no key is present
-		return &pineconeHTTPClient{cfg: cfg}
+		return nil, fmt.Errorf("%s is not set", cfg.ApiKeyEnv)
 	}
 
-	client, err := pinecone.NewClient(pinecone.NewClientParams{
+	params := pinecone.NewClientParams{
 		ApiKey: apiKey,
-		Host:   cfg.Environment, // if needed; newer SDK may not use this
-	})
-	if err != nil {
-		return &pineconeHTTPClient{cfg: cfg}
 	}
 
-	idx, err := client.Index(pinecone.NewIndexConnParams{
-		Host:      cfg.IndexName, // adjust based on actual SDK requirements
-		Namespace: cfg.Namespace,
-	})
+	client, err := pinecone.NewClient(params)
 	if err != nil {
-		return &pineconeHTTPClient{cfg: cfg}
+		return nil, fmt.Errorf("failed to create pinecone client: %w", err)
 	}
 
-	return &pineconeSDKClient{cfg: cfg, cli: client, index: idx}
+	idx, err := client.DescribeIndex(context.Background(), cfg.IndexName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe index: %w", err)
+	}
+
+	connParams := pinecone.NewIndexConnParams{Host: idx.Host}
+	index, err := client.Index(connParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create index connection: %w", err)
+	}
+
+	return &PineconeSDKClient{cfg: cfg, client: client, index: index}, nil
 }
 
-func (c *pineconeSDKClient) UpsertTexts(ctx context.Context, texts []string, metadata map[string]string) error {
-	if len(texts) == 0 { 
-		return nil 
+func (c *PineconeSDKClient) UpsertTexts(ctx context.Context, texts []string, metadata map[string]string) error {
+	if len(texts) == 0 {
+		return nil
 	}
-	
-	// Prepare vectors with text for server-side embedding
-	vectors := make([]*pinecone.Vector, 0, len(texts))
+
+	var records []*pinecone.IntegratedRecord
 	for i, t := range texts {
-		meta := pinecone.Metadata{}
-		for k, v := range metadata { 
-			meta[k] = v 
+		rec := pinecone.IntegratedRecord{
+			"_id":  fmt.Sprintf("doc-%d-%d", time.Now().UnixNano(), i),
+			"text": t,
 		}
-		meta["text"] = t // Store text in metadata for retrieval
-		
-		vec := &pinecone.Vector{
-			Id:       fmt.Sprintf("doc-%d-%d", time.Now().UnixNano(), i),
-			Metadata: &meta,
-			// Note: Adjust based on your Pinecone index configuration
-			// If using server-side embeddings, you might need to use a different field
-			// or API endpoint. This is a placeholder.
-			SparseValues: nil,
-			Values:       []float32{}, // Empty if using text-based embedding on server
-		}
-		vectors = append(vectors, vec)
-	}
-	
-	_, err := c.index.UpsertVectors(ctx, vectors)
-	return err
-}
-
-func (c *pineconeSDKClient) QueryByText(ctx context.Context, text string, topK int) []PineconeMatch {
-	if strings.TrimSpace(text) == "" { 
-		return nil 
-	}
-	if topK <= 0 { 
-		topK = c.cfg.TopK 
-	}
-	
-	// Query using text - this assumes your Pinecone index supports text queries
-	// Adjust based on your actual Pinecone configuration
-	queryReq := &pinecone.QueryVectorsRequest{
-		TopK:            uint32(topK),
-		IncludeMetadata: true,
-		IncludeValues:   false,
-		// If Pinecone supports text queries directly:
-		// Text: text,
-		// Otherwise, you might need to embed the text first
-		Vector: []float32{}, // Placeholder - adjust based on your setup
-	}
-	
-	resp, err := c.index.QueryVectors(ctx, queryReq)
-	if err != nil || resp == nil || len(resp.Matches) == 0 { 
-		return nil 
-	}
-	
-	out := make([]PineconeMatch, 0, len(resp.Matches))
-	for _, m := range resp.Matches {
-		pm := PineconeMatch{
-			ID:    m.Vector.Id,
-			Score: float64(m.Score),
-		}
-		if m.Vector.Metadata != nil {
-			if txt, ok := (*m.Vector.Metadata)["text"].(string); ok { 
-				pm.Text = txt 
+		for k, v := range metadata {
+			if k != "text" && k != "_id" && k != "id" {
+				rec[k] = v
 			}
 		}
-		out = append(out, pm)
+		records = append(records, &rec)
 	}
-	return out
+
+	batchSize := 25
+	for i := 0; i < len(records); i += batchSize {
+		end := i + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+
+		batch := records[i:end]
+		err := c.index.UpsertRecords(ctx, batch)
+		if err != nil {
+			return fmt.Errorf("failed to upsert records batch %d-%d: %w", i, end, err)
+		}
+		fmt.Printf("Upserted records batch %d-%d\n", i, end)
+	}
+	return nil
+}
+
+func (c *PineconeSDKClient) QueryByText(ctx context.Context, text string, topK int) ([]*SearchResult, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("text is empty")
+	}
+	// Use SearchRecords for text search with integrated embedding
+	req := &pinecone.SearchRecordsRequest{
+		Query: pinecone.SearchRecordsQuery{
+			TopK: int32(topK),
+			Inputs: &map[string]interface{}{
+				"text": text,
+			},
+		},
+		Fields: &[]string{"content", "title", "file_path", "section"},
+	}
+
+	resp, err := c.index.SearchRecords(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search records: %w", err)
+	}
+
+	var results []*SearchResult
+	for _, hit := range resp.Result.Hits {
+		result := &SearchResult{
+			ID:    hit.Id,
+			Score: float64(hit.Score),
+		}
+		// Extract metadata if available
+		if hit.Fields != nil {
+			metadata := hit.Fields
+			if text, ok := metadata["text"].(string); ok {
+				result.Text = text
+			} else {
+				result.Text = "Text not available"
+			}
+
+			// Convert metadata to string map
+			result.Metadata = make(map[string]string)
+			for key, value := range metadata {
+				if strValue, ok := value.(string); ok {
+					result.Metadata[key] = strValue
+				}
+			}
+		} else {
+			// Fallback values if no metadata
+			result.Text = "Text not available"
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }

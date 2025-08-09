@@ -3,6 +3,8 @@ package smartpromptopt
 import (
 	"strings"
 	"unicode/utf8"
+	
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func ChunkByRune(s string, chunkSize int) []string {
@@ -36,4 +38,34 @@ func Truncate(s string, max int) string {
 		count++
 	}
 	return b.String() + "…"
+}
+
+// collectRequestText extracts all text content from a BifrostRequest
+func collectRequestText(req *schemas.BifrostRequest) string {
+	var parts []string
+	
+	// Collect text completion input
+	if req.Input.TextCompletionInput != nil {
+		parts = append(parts, *req.Input.TextCompletionInput)
+	}
+	
+	// Collect chat messages
+	if req.Input.ChatCompletionInput != nil {
+		for _, m := range *req.Input.ChatCompletionInput {
+			// Extract text from string content
+			if m.Content.ContentStr != nil {
+				parts = append(parts, *m.Content.ContentStr)
+			}
+			// Extract text from content blocks
+			if m.Content.ContentBlocks != nil {
+				for _, block := range *m.Content.ContentBlocks {
+					if block.Text != nil {
+						parts = append(parts, *block.Text)
+					}
+				}
+			}
+		}
+	}
+	
+	return strings.Join(parts, "\n")
 }
