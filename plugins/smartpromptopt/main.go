@@ -27,6 +27,8 @@ type SmartPromptOptPlugin struct {
 	ring *RingBuffer[string]
 }
 
+// NewSmartPromptOpt creates a new SmartPromptOptPlugin.
+// It validates the configuration and creates a Pinecone client if enabled.
 func NewSmartPromptOpt(cfg Config) (*SmartPromptOptPlugin, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid smart_prompt_opt config: %w", err)
@@ -53,8 +55,11 @@ func NewSmartPromptOpt(cfg Config) (*SmartPromptOptPlugin, error) {
 	return p, nil
 }
 
+// GetName returns the name of the plugin.
 func (p *SmartPromptOptPlugin) GetName() string { return PluginName }
 
+// PreHook is the main hook point for input optimization.
+// It returns the request with the optimization applied, a short-circuit if the input is empty, and an error if the request is invalid.
 func (p *SmartPromptOptPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	if !p.cfg.Enabled || req == nil {
 		return req, nil, nil
@@ -113,11 +118,13 @@ func (p *SmartPromptOptPlugin) PreHook(ctx *context.Context, req *schemas.Bifros
 	return req, nil, nil
 }
 
+// PostHook is a minimal hook point for metrics.
 func (p *SmartPromptOptPlugin) PostHook(ctx *context.Context, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// Minimal for now. Could log usage for adaptive budgets in future.
 	return result, err, nil
 }
 
+// Cleanup is a no-op for now.
 func (p *SmartPromptOptPlugin) Cleanup() error { return nil }
 
 // ===== Helpers =====
@@ -139,12 +146,15 @@ func (p *SmartPromptOptPlugin) logf(level schemas.LogLevel, corrID string, forma
 	}
 }
 
+// debugRecord records a debug message in the ring buffer.
 func (p *SmartPromptOptPlugin) debugRecord(s string) {
 	if p.ring != nil {
 		p.ring.Add(s)
 	}
 }
 
+// normalizeRequest normalizes the request.
+// It returns a summary of the normalization steps.
 func (p *SmartPromptOptPlugin) normalizeRequest(req *schemas.BifrostRequest) string {
 	summary := []string{}
 	// Text completion
@@ -187,6 +197,8 @@ func (p *SmartPromptOptPlugin) normalizeRequest(req *schemas.BifrostRequest) str
 	return strings.Join(summary, ",")
 }
 
+// applyInstructionPrefix applies the instruction prefix to the request.
+// It returns true if the prefix was applied, false otherwise.
 func (p *SmartPromptOptPlugin) applyInstructionPrefix(req *schemas.BifrostRequest) bool {
 	prefix := strings.TrimSpace(p.cfg.InstructionPrefix)
 	if prefix == "" {
@@ -224,6 +236,8 @@ func (p *SmartPromptOptPlugin) applyInstructionPrefix(req *schemas.BifrostReques
 	return false
 }
 
+// applyProviderDefaults applies the provider defaults to the request.
+// It returns the request with the provider defaults applied.
 func (p *SmartPromptOptPlugin) applyProviderDefaults(req *schemas.BifrostRequest) {
 	if req.Params == nil {
 		req.Params = &schemas.ModelParameters{}
@@ -240,10 +254,14 @@ func (p *SmartPromptOptPlugin) applyProviderDefaults(req *schemas.BifrostRequest
 	}
 }
 
+// estimateTokens estimates the number of tokens in the request.
+// It returns the estimated number of tokens.
 func (p *SmartPromptOptPlugin) estimateTokens(req *schemas.BifrostRequest) int {
 	return p.estimator.Estimate(req)
 }
 
+// compressWithPinecone compresses the request using Pinecone.
+// It returns the summary and metadata.
 func (p *SmartPromptOptPlugin) compressWithPinecone(ctx context.Context, req *schemas.BifrostRequest) (summary string, meta map[string]any) {
 	if p.pc == nil {
 		return "", nil
@@ -276,6 +294,8 @@ func (p *SmartPromptOptPlugin) compressWithPinecone(ctx context.Context, req *sc
 	return b.String(), map[string]any{"hits": len(q)}
 }
 
+// injectSummary injects the summary into the request.
+// It returns the request with the summary injected.
 func (p *SmartPromptOptPlugin) injectSummary(req *schemas.BifrostRequest, summary string, meta map[string]any) {
 	msg := schemas.BifrostMessage{
 		Role: schemas.ModelChatMessageRoleSystem,
@@ -305,6 +325,8 @@ func (p *SmartPromptOptPlugin) injectSummary(req *schemas.BifrostRequest, summar
 	}
 }
 
+// trimHeuristically trims the request heuristically.
+// It returns true if the request was trimmed, false otherwise.
 func (p *SmartPromptOptPlugin) trimHeuristically(req *schemas.BifrostRequest) bool {
 	trimmed := false
 	if req.Input.ChatCompletionInput != nil {
@@ -343,6 +365,8 @@ func dedupeParagraphs(s string) string {
 	return strings.Join(out, "\n\n")
 }
 
+// isEmptyRequest checks if the request is empty.
+// It returns true if the request is empty, false otherwise.
 func isEmptyRequest(req *schemas.BifrostRequest) bool {
 	if req == nil {
 		return true
@@ -381,6 +405,8 @@ func isEmptyRequest(req *schemas.BifrostRequest) bool {
 	return false
 }
 
+// getCorrelationID gets the correlation ID from the context.
+// It returns the correlation ID.
 func getCorrelationID(ctx context.Context) string {
 	// placeholder: if context has a value, derive from it; else timestamp
 	return fmt.Sprintf("%d", time.Now().UnixNano())

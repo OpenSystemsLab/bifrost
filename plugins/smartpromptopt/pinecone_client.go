@@ -23,6 +23,8 @@ type SearchResult struct {
 	Metadata map[string]string
 }
 
+// NewPineconeSDKClient creates a new PineconeSDKClient.
+// It returns the client and an error if the client creation fails.
 func NewPineconeSDKClient(cfg PineconeConfig) (*PineconeSDKClient, error) {
 	apiKey := os.Getenv(cfg.ApiKeyEnv)
 	if apiKey == "" {
@@ -52,6 +54,8 @@ func NewPineconeSDKClient(cfg PineconeConfig) (*PineconeSDKClient, error) {
 	return &PineconeSDKClient{cfg: cfg, client: client, index: index}, nil
 }
 
+// UpsertTexts upserts texts into Pinecone.
+// It returns an error if the upsert fails.
 func (c *PineconeSDKClient) UpsertTexts(ctx context.Context, texts []string, metadata map[string]string) error {
 	if len(texts) == 0 {
 		return nil
@@ -88,6 +92,8 @@ func (c *PineconeSDKClient) UpsertTexts(ctx context.Context, texts []string, met
 	return nil
 }
 
+// QueryByText queries Pinecone for text.
+// It returns the search results and an error if the query fails.
 func (c *PineconeSDKClient) QueryByText(ctx context.Context, text string, topK int) ([]*SearchResult, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, fmt.Errorf("text is empty")
