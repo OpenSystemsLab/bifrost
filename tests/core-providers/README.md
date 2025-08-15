@@ -12,8 +12,10 @@ This directory contains comprehensive tests for all Bifrost AI providers, ensuri
 - **Google Vertex AI** - Google Cloud's AI platform
 - **Mistral** - Mistral AI models with vision capabilities
 - **Ollama** - Local LLM serving platform
-- **Groq** - Groq models
-- **SGLang** - SGLang models
+- **Groq** - OSS models
+- **SGLang** - OSS models
+- **Parasail** - OSS models
+- **Cerebras** - Llama, Qwen and GPT-OSS models
 
 ## 🏃‍♂️ Running Tests
 
@@ -59,7 +61,7 @@ export AZURE_API_KEY="your-azure-key"
 export AZURE_ENDPOINT="your-azure-endpoint"
 
 # AWS Bedrock
-export AWS_ACCESS_KEY_ID="your-aws-access-key"
+export AWS_ACCESS_KEY_ID_ID="your-aws-access-key"
 export AWS_SECRET_ACCESS_KEY="your-aws-secret-key"
 export AWS_REGION="us-east-1"
 

@@ -11,7 +11,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -19,26 +18,26 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// openAIResponsePool provides a pool for OpenAI response objects.
-var openAIResponsePool = sync.Pool{
-	New: func() interface{} {
-		return &schemas.BifrostResponse{}
-	},
-}
+// // openAIResponsePool provides a pool for OpenAI response objects.
+// var openAIResponsePool = sync.Pool{
+// 	New: func() interface{} {
+// 		return &schemas.BifrostResponse{}
+// 	},
+// }
 
-// acquireOpenAIResponse gets an OpenAI response from the pool and resets it.
-func acquireOpenAIResponse() *schemas.BifrostResponse {
-	resp := openAIResponsePool.Get().(*schemas.BifrostResponse)
-	*resp = schemas.BifrostResponse{} // Reset the struct
-	return resp
-}
+// // acquireOpenAIResponse gets an OpenAI response from the pool and resets it.
+// func acquireOpenAIResponse() *schemas.BifrostResponse {
+// 	resp := openAIResponsePool.Get().(*schemas.BifrostResponse)
+// 	*resp = schemas.BifrostResponse{} // Reset the struct
+// 	return resp
+// }
 
-// releaseOpenAIResponse returns an OpenAI response to the pool.
-func releaseOpenAIResponse(resp *schemas.BifrostResponse) {
-	if resp != nil {
-		openAIResponsePool.Put(resp)
-	}
-}
+// // releaseOpenAIResponse returns an OpenAI response to the pool.
+// func releaseOpenAIResponse(resp *schemas.BifrostResponse) {
+// 	if resp != nil {
+// 		openAIResponsePool.Put(resp)
+// 	}
+// }
 
 // OpenAIProvider implements the Provider interface for OpenAI's GPT API.
 type OpenAIProvider struct {
@@ -66,10 +65,10 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 	}
 
-	// Pre-warm response pools
-	for range config.ConcurrencyAndBufferSize.Concurrency {
-		openAIResponsePool.Put(&schemas.BifrostResponse{})
-	}
+	// // Pre-warm response pools
+	// for range config.ConcurrencyAndBufferSize.Concurrency {
+	// 	openAIResponsePool.Put(&schemas.BifrostResponse{})
+	// }
 
 	// Configure proxy if provided
 	client = configureProxy(client, config.ProxyConfig, logger)
@@ -147,8 +146,9 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 	responseBody := resp.Body()
 
 	// Pre-allocate response structs from pools
-	response := acquireOpenAIResponse()
-	defer releaseOpenAIResponse(response)
+	// response := acquireOpenAIResponse()
+	// defer releaseOpenAIResponse(response)
+	response := &schemas.BifrostResponse{}
 
 	// Use enhanced response handler with pre-allocated response
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
@@ -164,6 +164,8 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, model string
 	if params != nil {
 		response.ExtraFields.Params = *params
 	}
+
+	response.ExtraFields.Provider = schemas.OpenAI
 
 	return response, nil
 }
@@ -279,8 +281,9 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, model string, key
 	responseBody := resp.Body()
 
 	// Pre-allocate response structs from pools
-	response := acquireOpenAIResponse()
-	defer releaseOpenAIResponse(response)
+	// response := acquireOpenAIResponse()
+	// defer releaseOpenAIResponse(response)
+	response := &schemas.BifrostResponse{}
 
 	// Use enhanced response handler with pre-allocated response
 	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
@@ -390,6 +393,7 @@ func handleOpenAIStreaming(
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
+		chunkIndex := -1
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -426,6 +430,8 @@ func handleOpenAIStreaming(
 				continue
 			}
 
+			chunkIndex++
+
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
 				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
@@ -455,6 +461,7 @@ func handleOpenAIStreaming(
 					response.ExtraFields.Params = *params
 				}
 				response.ExtraFields.Provider = providerType
+				response.ExtraFields.ChunkIndex = chunkIndex
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 				continue
@@ -473,19 +480,21 @@ func handleOpenAIStreaming(
 					response.ExtraFields.Params = *params
 				}
 				response.ExtraFields.Provider = providerType
+				response.ExtraFields.ChunkIndex = chunkIndex
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 
 				// End stream processing after finish reason
-				break
+				continue
 			}
 
 			// Handle regular content chunks
-			if choice.Delta.Content != nil || len(choice.Delta.ToolCalls) > 0 {
+			if choice.BifrostStreamResponseChoice != nil && (choice.BifrostStreamResponseChoice.Delta.Content != nil || len(choice.BifrostStreamResponseChoice.Delta.ToolCalls) > 0) {
 				if params != nil {
 					response.ExtraFields.Params = *params
 				}
 				response.ExtraFields.Provider = providerType
+				response.ExtraFields.ChunkIndex = chunkIndex
 
 				processAndSendResponse(ctx, postHookRunner, &response, responseChan, logger)
 			}
@@ -648,6 +657,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
+		chunkIndex := -1
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -684,6 +694,8 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 				continue
 			}
 
+			chunkIndex++
+
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
 				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
@@ -718,6 +730,8 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 			if params != nil {
 				response.ExtraFields.Params = *params
 			}
+
+			response.ExtraFields.ChunkIndex = chunkIndex
 
 			processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 		}
@@ -866,6 +880,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
+		chunkIndex := -1
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -901,6 +916,8 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 				continue
 			}
 
+			chunkIndex++
+
 			// Handle error responses
 			if _, hasError := errorCheck["error"]; hasError {
 				errorStream, err := parseOpenAIErrorForStreamDataLine(jsonData)
@@ -934,6 +951,8 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 			if params != nil {
 				response.ExtraFields.Params = *params
 			}
+
+			response.ExtraFields.ChunkIndex = chunkIndex
 
 			processAndSendResponse(ctx, postHookRunner, &response, responseChan, provider.logger)
 		}

@@ -15,7 +15,9 @@ Multi-provider support with unified API across all AI providers. Switch between 
 | **Mistral**        | Mistral Large, Medium, Small           | European AI, cost-effective         | ✅         |
 | **Ollama**         | Llama, Mistral, CodeLlama              | Local deployment, privacy           | ✅         |
 | **Groq**           | Mixtral, Llama, Gemma                  | Enterprise AI platform              | ✅         |
-| **SGLang**         | Qwen                 | Enterprise AI platform              | ✅         |
+| **Parasail**       | GPT OSS, Llama, Qwen                   | Enterprise AI platform              | ✅         |
+| **SGLang**         | Qwen                                   | Enterprise AI platform              | ✅         |
+| **Cerebras**       | Llama 3.3 70B                          | Enterprise AI platform              | ✅         |
 
 ---
 
@@ -174,7 +176,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Bedrock:
         return []schemas.Key{
             {
-                Value:  os.Getenv("AWS_ACCESS_KEY_ID"),
+                Value:  os.Getenv("AWS_ACCESS_KEY_ID_ID"),
                 Models: []string{"anthropic.claude-3-5-sonnet-20241022-v2:0"},
                 Weight: 1.0,
             },
@@ -261,7 +263,7 @@ func useWithFallback(bf *bifrost.Bifrost) {
           "models": ["anthropic.claude-3-5-sonnet-20241022-v2:0"],
           "weight": 1.0,
           "bedrock_key_config": {
-            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "access_key": "env.AWS_ACCESS_KEY_ID_ID",
             "secret_key": "env.AWS_SECRET_ACCESS_KEY",
             "session_token": "env.AWS_SESSION_TOKEN",
             "region": "us-east-1",
@@ -309,6 +311,165 @@ echo "$response"
 ## 🔧 Provider-Specific Configuration
 
 ### Enterprise Providers
+
+<details>
+<summary><strong>AWS Bedrock Configuration</strong></summary>
+
+AWS Bedrock supports both explicit credential configuration and IAM role-based authentication for enhanced security.
+
+#### **Explicit Credentials (Traditional Method)**
+
+**Go Package:**
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    if provider == schemas.Bedrock {
+        return []schemas.Key{
+            {
+                Models: []string{"anthropic.claude-3-5-sonnet-20241022-v2:0"},
+                Weight: 1.0,
+                BedrockKeyConfig: &schemas.BedrockKeyConfig{
+                    AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID_ID"),
+                    SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"),
+                    SessionToken: os.Getenv("AWS_SESSION_TOKEN"), // Optional
+                    Region:       "us-east-1",
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider not configured")
+}
+```
+
+**HTTP Transport:**
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "models": ["anthropic.claude-3-5-sonnet-20241022-v2:0"],
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "session_token": "env.AWS_SESSION_TOKEN",
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+#### **IAM Role Authentication (Recommended for Production)**
+
+For enhanced security, Bifrost supports IAM role-based authentication when running in AWS environments.
+
+**Go Package:**
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    if provider == schemas.Bedrock {
+        return []schemas.Key{
+            {
+                Models: []string{"anthropic.claude-3-5-sonnet-20241022-v2:0"},
+                Weight: 1.0,
+                BedrockKeyConfig: &schemas.BedrockKeyConfig{
+                    // Leave AccessKey and SecretKey empty for IAM role authentication
+                    AccessKey: "",
+                    SecretKey: "",
+                    Region:    "us-east-1",
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider not configured")
+}
+```
+
+**HTTP Transport:**
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "models": ["anthropic.claude-3-5-sonnet-20241022-v2:0"],
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "region": "us-east-1"
+            // No access_key or secret_key - uses IAM role
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+#### **IAM Role Authentication Environments**
+
+IAM role authentication automatically works in these AWS environments:
+
+- **🟢 EC2 Instances** - Instance profiles with attached IAM roles
+- **🟢 Lambda Functions** - Execution role credentials
+- **🟢 ECS Tasks** - Task role credentials
+- **🟢 EKS Pods** - IAM roles for service accounts (IRSA)
+- **🟢 AWS CodeBuild** - Service role credentials
+- **🟢 On-Premises** - IAM Roles Anywhere for hybrid environments
+
+#### **Required IAM Permissions**
+
+Your IAM role must have the following permissions:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/*"
+      ]
+    }
+  ]
+}
+```
+
+#### **Setup Examples**
+
+**EC2 Instance Setup:**
+```bash
+# 1. Create IAM role with Bedrock permissions
+# 2. Attach role to EC2 instance
+# 3. Configure Bifrost with empty credentials
+export AWS_REGION=us-east-1
+# No need to set AWS_ACCESS_KEY_ID_ID or AWS_SECRET_ACCESS_KEY
+```
+
+**Docker on EC2:**
+```bash
+docker run -p 8080:8080 \
+  -e AWS_REGION=us-east-1 \
+  -v $(pwd)/config.json:/app/config/config.json \
+  maximhq/bifrost
+```
+
+**Lambda Function:**
+```javascript
+// Lambda execution role automatically provides credentials
+// No additional configuration needed
+```
+
+</details>
 
 <details>
 <summary><strong>Azure OpenAI Configuration</strong></summary>
@@ -470,17 +631,17 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 ## 📋 Provider Features Matrix
 
-| Feature              | OpenAI | Anthropic | Azure | Bedrock | Vertex | Cohere | Mistral | Ollama | Groq   | SGLang |  
-| -------------------- | ------ | --------- | ----- | ------- | ------ | ------ | ------- | ------ | ------ | ------ |
-| **Chat Completion**  | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     | ✅     |
-| **Function Calling** | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ✅     | ✅     |
-| **Streaming**        | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     | ✅     |
-| **Vision**           | ✅     | ✅        |  ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ❌     | ✅     |
-| **JSON Mode**        | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ✅     | ✅     |
-| **🔊 Audio Speech**   | ✅     | ❌        | ❌    | ❌      | ❌     | ❌     | ❌      | ❌     | ❌     | ❌     |
-| **🎤 Transcription** | ✅     | ❌        | ❌    | ❌      | ❌     | ❌     | ❌      | ❌     | ❌     | ❌     |
-| **Custom Base URL**  | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     | ✅     | ✅     |
-| **Proxy Support**    | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     | ✅     | ✅      |
+| Feature              | OpenAI | Anthropic | Azure | Bedrock | Vertex | Cohere | Mistral | Ollama | Groq   | Parasail | SGLang | Cerebras |
+| -------------------- | ------ | --------- | ----- | ------- | ------ | ------ | ------- | ------ | ------ | -------- | ------ | -------- |
+| **Text Completion**  | ❌     | ✅        | ✅    | ✅      | ❌     | ❌     | ❌      | ❌     | ❌     | ❌      | ❌     | ✅       |
+| **Chat Completion**  | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     | ✅       | ✅     | ✅       |
+| **Function Calling** | ✅     | ✅        | ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ✅     | ✅       | ✅     | ✅       |
+| **Streaming**        | ✅     | ✅        | ✅    | ✅      | ✅     | ✅     | ✅      | ✅     | ✅     | ✅       | ✅     | ✅       |
+| **Vision**           | ✅     | ✅        |  ✅    | ✅      | ✅     | ❌     | ✅      | ✅     | ❌     | ✅       | ✅     | ✅       |
+| **🔊 Audio Speech**   | ✅     | ❌        | ❌    | ❌      | ❌     | ❌     | ❌      | ❌     | ❌     | ❌       | ❌     | ❌       |
+| **🎤 Transcription** | ✅     | ❌        | ❌    | ❌      | ❌     | ❌     | ❌      | ❌     | ❌     | ❌       | ❌     | ❌       |
+| **Custom Base URL**  | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     | ✅     | ✅       | ✅     | ✅       |
+| **Proxy Support**    | ✅     | ✅        | ✅    | ❌      | ❌     | ✅     | ✅      | ✅     | ✅     | ✅       | ✅      | ✅       |
 
 ### **🔊 Audio Features Details**
 
@@ -495,7 +656,9 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | **Mistral** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
 | **Ollama** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
 | **Groq** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+| **Parasail** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
 | **SGLang** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
+| **Cerebras** | ❌ Not Available | ❌ Not Available | N/A | ❌ N/A |
 
 > **📝 Note:** Audio features are currently supported only through OpenAI. Other providers return `unsupported operation` errors for audio requests. This allows you to use fallback chains where non-audio requests can still use other providers.
 

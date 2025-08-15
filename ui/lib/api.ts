@@ -6,6 +6,7 @@ import {
   AddProviderRequest,
   UpdateProviderRequest,
   BifrostErrorResponse,
+  CacheConfig,
 } from '@/lib/types/config'
 import { MCPClient, CreateMCPClientRequest, UpdateMCPClientRequest } from '@/lib/types/mcp'
 import { LogEntry, LogFilters, LogStats, Pagination } from './types/logs'
@@ -112,6 +113,15 @@ class ApiService {
   async getDroppedRequests(): ServiceResponse<{ dropped_requests: number }> {
     try {
       const response = await this.client.get('/logs/dropped')
+      return [response.data, null]
+    } catch (error) {
+      return [null, this.getErrorMessage(error)]
+    }
+  }
+
+  async getAvailableModels(): ServiceResponse<{ models: string[] }> {
+    try {
+      const response = await this.client.get('/logs/models')
       return [response.data, null]
     } catch (error) {
       return [null, this.getErrorMessage(error)]
@@ -225,6 +235,24 @@ class ApiService {
     try {
       await this.client.put('/config', data)
       return [null, null]
+    } catch (error) {
+      return [null, this.getErrorMessage(error)]
+    }
+  }
+
+  async getCacheConfig(): ServiceResponse<CacheConfig> {
+    try {
+      const response = await this.client.get('/config/cache')
+      return [response.data, null]
+    } catch (error) {
+      return [null, this.getErrorMessage(error)]
+    }
+  }
+
+  async updateCacheConfig(data: CacheConfig): ServiceResponse<{ config: CacheConfig }> {
+    try {
+      const response = await this.client.put('/config/cache', data)
+      return [response.data, null]
     } catch (error) {
       return [null, this.getErrorMessage(error)]
     }

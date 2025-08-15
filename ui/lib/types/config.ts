@@ -1,7 +1,19 @@
 // Configuration types that match the Go backend structures
 
 // ModelProvider enum matching Go's schemas.ModelProvider
-export type ModelProvider = 'openai' | 'azure' | 'anthropic' | 'bedrock' | 'cohere' | 'vertex' | 'mistral' | 'ollama' | 'groq' | 'sgl'
+export type ModelProvider =
+  | 'openai'
+  | 'azure'
+  | 'anthropic'
+  | 'bedrock'
+  | 'cohere'
+  | 'vertex'
+  | 'mistral'
+  | 'ollama'
+  | 'groq'
+  | 'parasail'
+  | 'sgl'
+  | 'cerebras'
 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
@@ -126,7 +138,24 @@ export interface CoreConfig {
   enable_logging: boolean
   enable_governance: boolean
   enforce_governance_header: boolean
+  allow_direct_keys: boolean
+  enable_caching: boolean
   allowed_origins: string[]
+}
+
+// Redis configuration types
+export interface CacheConfig {
+  id?: number
+  addr: string
+  username?: string
+  password?: string
+  db: number
+  ttl_seconds: number
+  prefix?: string
+  cache_by_model: boolean
+  cache_by_provider: boolean
+  created_at?: string
+  updated_at?: string
 }
 
 // Utility types for form handling

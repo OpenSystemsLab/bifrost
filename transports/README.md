@@ -52,7 +52,7 @@ docker run -p 8080:8080 -v $(pwd)/data:/app/data maximhq/bifrost
 | Feature                       | Description                                                         | Learn More                                                 |
 | ----------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------- |
 | **🖥️ Built-in Web UI**        | Visual configuration, live monitoring, request logs, and analytics  | Open `http://localhost:8080` after startup                 |
-| **🔄 Multi-Provider Support** | OpenAI, Anthropic, Azure, Bedrock, Vertex, Cohere, Mistral, Ollama, Groq, SGLang | [Provider Setup](../docs/usage/providers.md)               |
+| **🔄 Multi-Provider Support** | OpenAI, Anthropic, Azure, Bedrock, Vertex, Cohere, Mistral, Ollama, Groq, Parasail, SGLang, Cerebras | [Provider Setup](../docs/usage/providers.md)               |
 | **🔌 Drop-in Compatibility**  | Replace OpenAI/Anthropic/GenAI APIs with zero code changes          | [Integrations](../docs/usage/http-transport/integrations/) |
 | **🛠️ MCP Tool Calling**       | Enable AI models to use external tools (filesystem, web, databases) | [MCP Guide](../docs/mcp.md)                                |
 | **⚡ Plugin System**          | Add analytics, caching, rate limiting, custom logic                 | [Plugin System](../docs/plugins.md)                        |
@@ -240,11 +240,12 @@ curl http://localhost:8080/metrics
 
 ### For Binary
 
-| Flag       | Default | Description                              |
-| ---------- | ------- | ---------------------------------------- |
-| `-app-dir` | .       | Application data directory (config+logs) |
-| `-port`    | 8080    | HTTP server port                         |
-| `-plugins` | -       | Comma-separated plugin list              |
+| Flag       | Default   | Description                              |
+| ---------- | --------- | ---------------------------------------- |
+| `-app-dir` | .         | Application data directory (config+logs) |
+| `-port`    | 8080      | HTTP server port                         |
+| `-host`    | localhost | Host to bind server to                   |
+| `-plugins` | -         | Comma-separated plugin list              |
 
 ### Understanding App Directory & Docker Volumes
 
@@ -260,10 +261,24 @@ For complete setup instructions, deployment scenarios, and best practices, see t
 
 ### For Docker
 
-| Variable      | Description          |
-| ------------- | -------------------- |
-| `APP_PORT`    | Server port override |
-| `APP_PLUGINS` | Plugin list override |
+| Variable      | Default   | Description                    |
+| ------------- | --------- | ------------------------------ |
+| `APP_PORT`    | 8080      | Server port override           |
+| `APP_HOST`    | 0.0.0.0   | Host to bind server to         |
+| `APP_PLUGINS` | -         | Plugin list override           |
+
+**Network Configuration Examples:**
+
+```bash
+# Listen on all interfaces (for container access)
+docker run -p 8080:8080 -e APP_HOST=0.0.0.0 maximhq/bifrost
+
+# IPv6 support - listen on all IPv6 interfaces
+docker run -p 8080:8080 -e APP_HOST=:: maximhq/bifrost
+
+# Specific interface binding
+docker run -p 8080:8080 -e APP_HOST=192.168.1.100 maximhq/bifrost
+```
 
 ---
 
@@ -277,7 +292,7 @@ For complete setup instructions, deployment scenarios, and best practices, see t
 
 ### 🚀 Core Features
 
-- **[🔗 Multi-Provider Support](../docs/usage/providers.md)** - 10+ AI providers with fallbacks
+- **[🔗 Multi-Provider Support](../docs/usage/providers.md)** - 12+ AI providers with fallbacks
 - **[🛠️ MCP Integration](../docs/mcp.md)** - External tool calling for AI models
 - **[🔌 Plugin System](../docs/plugins.md)** - Extensible middleware architecture
 
@@ -297,8 +312,8 @@ For complete setup instructions, deployment scenarios, and best practices, see t
 
 ## 🎉 Ready to Scale?
 
-🚀 **Production Deployment**: [Production Guide](../docs/usage/http-transport/configuration/)  
-📈 **Performance Tuning**: [Benchmarks & Optimization](../docs/benchmarks.md)  
+🚀 **Production Deployment**: [Production Guide](../docs/usage/http-transport/configuration/)
+📈 **Performance Tuning**: [Benchmarks & Optimization](../docs/benchmarks.md)
 🔍 **Troubleshooting**: [Common Issues](../docs/usage/errors.md)
 
 ---

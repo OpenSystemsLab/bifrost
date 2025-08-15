@@ -65,7 +65,7 @@ type MCPClient struct {
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
 type MCPClientConnectionInfo struct {
-	Type               schemas.MCPConnectionType `json:"type"`                           // Connection type (HTTP, STDIO, or SSE)
+	Type               schemas.MCPConnectionType `json:"type"`                           // Connection type (HTTP, STDIO, SSE, or InProcess)
 	ConnectionURL      *string                   `json:"connection_url,omitempty"`       // HTTP/SSE endpoint URL (for HTTP/SSE connections)
 	StdioCommandString *string                   `json:"stdio_command_string,omitempty"` // Command string for display (for STDIO connections)
 }
@@ -444,38 +444,28 @@ func (m *MCPManager) createLocalMCPServer() (*server.MCPServer, error) {
 	return mcpServer, nil
 }
 
-// createLocalMCPClient creates a client that connects to the local MCP server via STDIO.
-// This client is used internally by Bifrost to access locally hosted tools.
+// createLocalMCPClient creates a placeholder client entry for the local MCP server.
+// The actual in-process client connection will be established in startLocalMCPServer.
 //
 // Returns:
-//   - *MCPClient: Configured client for local server
+//   - *MCPClient: Placeholder client for local server
 //   - error: Any creation error
 func (m *MCPManager) createLocalMCPClient() (*MCPClient, error) {
-	// For local STDIO communication, we'll use the same process
-	// Create a STDIO transport that communicates with our local server
-	// This creates an in-process communication channel
-	stdioTransport := transport.NewStdio(
-		"",  // Empty command means in-process
-		nil, // No environment variables needed
-	)
-
-	// Create the MCP client
-	mcpClient := client.NewClient(stdioTransport)
-
+	// Don't create the actual client connection here - it will be created
+	// after the server is ready using NewInProcessClient
 	return &MCPClient{
 		Name: BifrostMCPClientName,
-		Conn: mcpClient,
 		ExecutionConfig: schemas.MCPClientConfig{
 			Name: BifrostMCPClientName,
 		},
 		ToolMap: make(map[string]schemas.Tool),
 		ConnectionInfo: MCPClientConnectionInfo{
-			Type: schemas.MCPConnectionTypeSTDIO,
+			Type: schemas.MCPConnectionTypeInProcess, // Accurate: in-process (in-memory) transport
 		},
 	}, nil
 }
 
-// startLocalMCPServer starts the STDIO server in a background goroutine.
+// startLocalMCPServer creates an in-process connection between the local server and client.
 //
 // Returns:
 //   - error: Any startup error
@@ -492,38 +482,25 @@ func (m *MCPManager) startLocalMCPServer() error {
 		return fmt.Errorf("server not initialized")
 	}
 
-	// Start the STDIO server in background goroutine
-	go func() {
-		if err := server.ServeStdio(m.server); err != nil {
-			m.logger.Error(fmt.Errorf("MCP STDIO server error: %w", err))
-			m.mu.Lock()
-			m.serverRunning = false
-			m.mu.Unlock()
-		}
-	}()
+	// Create in-process client directly connected to the server
+	inProcessClient, err := client.NewInProcessClient(m.server)
+	if err != nil {
+		return fmt.Errorf("failed to create in-process MCP client: %w", err)
+	}
 
-	// Mark server as running
-	m.serverRunning = true
-
-	// Initialize the client connection to the server
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if _, ok := m.clientMap[BifrostMCPClientKey]; !ok {
+	// Update the client connection
+	clientEntry, ok := m.clientMap[BifrostMCPClientKey]
+	if !ok {
 		return fmt.Errorf("bifrost client not found")
 	}
+	clientEntry.Conn = inProcessClient
 
-	// Start the local client transport first
-	if err := m.clientMap[BifrostMCPClientKey].Conn.Start(ctx); err != nil {
-		m.serverRunning = false
-		return fmt.Errorf("failed to start local MCP client transport: %v", err)
-	}
+	// Initialize the in-process client
+	ctx, cancel := context.WithTimeout(context.Background(), MCPClientConnectionEstablishTimeout)
+	defer cancel()
 
-	// Create proper initialize request
+	// Create proper initialize request with correct structure
 	initRequest := mcp.InitializeRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodInitialize),
-		},
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			Capabilities:    mcp.ClientCapabilities{},
@@ -534,11 +511,13 @@ func (m *MCPManager) startLocalMCPServer() error {
 		},
 	}
 
-	_, err := m.clientMap[BifrostMCPClientKey].Conn.Initialize(ctx, initRequest)
+	_, err = inProcessClient.Initialize(ctx, initRequest)
 	if err != nil {
-		m.serverRunning = false
-		return fmt.Errorf("failed to initialize MCP client: %v", err)
+		return fmt.Errorf("failed to initialize MCP client: %w", err)
 	}
+
+	// Mark server as running
+	m.serverRunning = true
 
 	return nil
 }
@@ -647,6 +626,8 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		externalClient, connectionInfo, err = m.createSTDIOConnection(config)
 	case schemas.MCPConnectionTypeSSE:
 		externalClient, connectionInfo, err = m.createSSEConnection(config)
+	case schemas.MCPConnectionTypeInProcess:
+		externalClient, connectionInfo, err = m.createInProcessConnection(config)
 	default:
 		return fmt.Errorf("unknown connection type: %s", config.ConnectionType)
 	}
@@ -680,9 +661,6 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 
 	// Create proper initialize request for external client
 	extInitRequest := mcp.InitializeRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodInitialize),
-		},
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			Capabilities:    mcp.ClientCapabilities{},
@@ -945,6 +923,12 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		if config.StdioConfig == nil {
 			return fmt.Errorf("StdioConfig is required for STDIO connection type in client '%s'", config.Name)
 		}
+	case schemas.MCPConnectionTypeInProcess:
+		// InProcess requires a server instance to be provided programmatically
+		// This cannot be validated from JSON config - the server must be set when using the Go package
+		if config.InProcessServer == nil {
+			return fmt.Errorf("InProcessServer is required for InProcess connection type in client '%s' (Go package only)", config.Name)
+		}
 	default:
 		return fmt.Errorf("unknown connection type '%s' in client '%s'", config.ConnectionType, config.Name)
 	}
@@ -1083,6 +1067,34 @@ func (m *MCPManager) createSSEConnection(config schemas.MCPClientConfig) (*clien
 	client := client.NewClient(sseTransport)
 
 	return client, connectionInfo, nil
+}
+
+// createInProcessConnection creates an in-process MCP client connection without holding locks.
+// This allows direct connection to an MCP server running in the same process, providing
+// the lowest latency and highest performance for tool execution.
+func (m *MCPManager) createInProcessConnection(config schemas.MCPClientConfig) (*client.Client, MCPClientConnectionInfo, error) {
+	if config.InProcessServer == nil {
+		return nil, MCPClientConnectionInfo{}, fmt.Errorf("InProcess connection requires a server instance")
+	}
+
+	// Type assert to ensure we have a proper MCP server
+	mcpServer, ok := config.InProcessServer.(*server.MCPServer)
+	if !ok {
+		return nil, MCPClientConnectionInfo{}, fmt.Errorf("InProcessServer must be a *server.MCPServer instance")
+	}
+
+	// Create in-process client directly connected to the provided server
+	inProcessClient, err := client.NewInProcessClient(mcpServer)
+	if err != nil {
+		return nil, MCPClientConnectionInfo{}, fmt.Errorf("failed to create in-process client: %w", err)
+	}
+
+	// Prepare connection info
+	connectionInfo := MCPClientConnectionInfo{
+		Type: config.ConnectionType,
+	}
+
+	return inProcessClient, connectionInfo, nil
 }
 
 // cleanup performs cleanup of all MCP resources including clients and local server.

@@ -88,7 +88,7 @@ type BedrockMistralContent struct {
 type BedrockMistralChatMessage struct {
 	Role       schemas.ModelChatMessageRole `json:"role"`                   // Role of the message sender
 	Content    []BedrockMistralContent      `json:"content"`                // Array of message content
-	ToolCalls  *[]BedrockMistralToolCall    `json:"tool_calls,omitempty"`   // Optional tool calls
+	ToolCalls  *[]BedrockAnthropicToolCall  `json:"tool_calls,omitempty"`   // Optional tool calls
 	ToolCallID *string                      `json:"tool_call_id,omitempty"` // Optional tool call ID
 }
 
@@ -109,14 +109,21 @@ type BedrockAnthropicImageSource struct {
 	Bytes string `json:"bytes"` // Base64 encoded image data
 }
 
-// BedrockMistralToolCall represents a tool call for Mistral models.
-type BedrockMistralToolCall struct {
-	ID       string               `json:"id"`       // Tool call ID
-	Function schemas.FunctionCall `json:"function"` // Function to call
-}
-
+// BedrockAnthropicToolUseMessage represents a tool use message for Anthropic models.
 type BedrockAnthropicToolUseMessage struct {
 	ToolUse *BedrockAnthropicToolUse `json:"toolUse"`
+}
+
+// BedrockToolChoice represents the tool choice configuration for Bedrock models.
+type BedrockToolChoice struct {
+	Auto map[string]interface{} `json:"auto,omitempty"`
+	Any  map[string]interface{} `json:"any,omitempty"`
+	Tool *BedrockSpecificTool   `json:"tool,omitempty"`
+}
+
+// BedrockSpecificTool represents a specific tool choice configuration.
+type BedrockSpecificTool struct {
+	Name string `json:"name"`
 }
 
 type BedrockAnthropicToolUse struct {
@@ -231,7 +238,6 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		bedrockChatResponsePool.Put(&BedrockChatResponse{})
-
 	}
 
 	return &BedrockProvider{
@@ -292,17 +298,9 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 	// Set any extra headers from network config
 	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
 
-	if config.SecretKey != "" {
-		if err := signAWSRequest(req, config.AccessKey, config.SecretKey, config.SessionToken, region, "bedrock"); err != nil {
-			return nil, err
-		}
-	} else {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: schemas.ErrorField{
-				Message: "secret access key not set",
-			},
-		}
+	// Sign the request using either explicit credentials or IAM role authentication
+	if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, region, "bedrock"); err != nil {
+		return nil, err
 	}
 
 	// Execute the request
@@ -359,12 +357,8 @@ func (provider *BedrockProvider) completeRequest(ctx context.Context, requestBod
 // It handles different model types (Anthropic and Mistral) and formats the response.
 // Returns a BifrostResponse containing the completion results or an error if processing fails.
 func (provider *BedrockProvider) getTextCompletionResult(result []byte, model string) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	switch model {
-	case "anthropic.claude-instant-v1:2":
-		fallthrough
-	case "anthropic.claude-v2":
-		fallthrough
-	case "anthropic.claude-v2:1":
+	switch {
+	case strings.Contains(model, "anthropic."):
 		var response BedrockAnthropicTextResponse
 		if err := sonic.Unmarshal(result, &response); err != nil {
 			return nil, &schemas.BifrostError{
@@ -398,15 +392,7 @@ func (provider *BedrockProvider) getTextCompletionResult(result []byte, model st
 			},
 		}, nil
 
-	case "mistral.mixtral-8x7b-instruct-v0:1":
-		fallthrough
-	case "mistral.mistral-7b-instruct-v0:2":
-		fallthrough
-	case "mistral.mistral-large-2402-v1:0":
-		fallthrough
-	case "mistral.mistral-large-2407-v1:0":
-		fallthrough
-	case "mistral.mistral-small-2402-v1:0":
+	case strings.Contains(model, "mistral."):
 		var response BedrockMistralTextResponse
 		if err := sonic.Unmarshal(result, &response); err != nil {
 			return nil, &schemas.BifrostError{
@@ -470,24 +456,8 @@ func parseBedrockAnthropicMessageToolCallContent(content string) map[string]inte
 // It handles different model types (Anthropic and Mistral) and formats messages accordingly.
 // Returns a map containing the formatted messages and any system messages, or an error if formatting fails.
 func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schemas.BifrostMessage, model string) (map[string]interface{}, *schemas.BifrostError) {
-	switch model {
-	case "anthropic.claude-instant-v1:2":
-		fallthrough
-	case "anthropic.claude-v2":
-		fallthrough
-	case "anthropic.claude-v2:1":
-		fallthrough
-	case "anthropic.claude-3-sonnet-20240229-v1:0":
-		fallthrough
-	case "anthropic.claude-3-5-sonnet-20240620-v1:0":
-		fallthrough
-	case "anthropic.claude-3-5-sonnet-20241022-v2:0":
-		fallthrough
-	case "anthropic.claude-3-5-haiku-20241022-v1:0":
-		fallthrough
-	case "anthropic.claude-3-opus-20240229-v1:0":
-		fallthrough
-	case "anthropic.claude-3-7-sonnet-20250219-v1:0":
+	switch {
+	case strings.Contains(model, "anthropic."):
 		// Add system messages if present
 		var systemMessages []BedrockAnthropicSystemMessage
 		for _, msg := range messages {
@@ -689,43 +659,95 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 
 		return body, nil
 
-	case "mistral.mistral-large-2402-v1:0":
-		fallthrough
-	case "mistral.mistral-large-2407-v1:0":
+	case strings.Contains(model, "mistral."):
 		var bedrockMessages []BedrockMistralChatMessage
 		for _, msg := range messages {
-			var filteredToolCalls []BedrockMistralToolCall
+			// Check if this is a tool message before changing the role
+			isToolMessage := msg.Role == schemas.ModelChatMessageRoleTool
+
+			// Convert tool messages to user messages (Mistral doesn't support tool role)
+			role := msg.Role
+			switch role {
+			case schemas.ModelChatMessageRoleTool, schemas.ModelChatMessageRoleSystem:
+				role = schemas.ModelChatMessageRoleUser
+			}
+
+			// Only process user and assistant messages
+			if role != schemas.ModelChatMessageRoleUser && role != schemas.ModelChatMessageRoleAssistant {
+				continue
+			}
+
+			var filteredToolCalls []BedrockAnthropicToolCall
 			if msg.AssistantMessage != nil && msg.AssistantMessage.ToolCalls != nil {
 				for _, toolCall := range *msg.AssistantMessage.ToolCalls {
-					if toolCall.ID != nil {
-						filteredToolCalls = append(filteredToolCalls, BedrockMistralToolCall{
-							ID:       *toolCall.ID,
-							Function: toolCall.Function,
+					if toolCall.ID != nil && toolCall.Function.Name != nil {
+						// Parse the arguments to get parameters
+						var params interface{}
+						if toolCall.Function.Arguments != "" {
+							if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &params); err != nil {
+								// If parsing fails, use empty object
+								params = map[string]interface{}{}
+							}
+						}
+
+						filteredToolCalls = append(filteredToolCalls, BedrockAnthropicToolCall{
+							ToolSpec: BedrockAnthropicToolSpec{
+								Name:        *toolCall.Function.Name,
+								Description: "Tool function", // Default description since FunctionCall doesn't have one
+								InputSchema: struct {
+									Json interface{} `json:"json"`
+								}{
+									Json: params,
+								},
+							},
 						})
 					}
 				}
 			}
 
 			message := BedrockMistralChatMessage{
-				Role: msg.Role,
+				Role: role,
 			}
 
+			// Ensure message has valid content
+			var hasValidContent bool
 			switch {
-			case msg.Content.ContentStr != nil:
+			case msg.Content.ContentStr != nil && *msg.Content.ContentStr != "":
 				message.Content = []BedrockMistralContent{{Text: *msg.Content.ContentStr}}
-			case msg.Content.ContentBlocks != nil:
+				hasValidContent = true
+			case msg.Content.ContentBlocks != nil && len(*msg.Content.ContentBlocks) > 0:
 				for _, b := range *msg.Content.ContentBlocks {
-					if b.Text != nil {
+					if b.Text != nil && *b.Text != "" {
 						message.Content = append(message.Content, BedrockMistralContent{Text: *b.Text})
+						hasValidContent = true
 					}
 				}
 			}
 
-			if len(filteredToolCalls) > 0 {
-				message.ToolCalls = &filteredToolCalls
+			// For tool messages that were converted to user messages, ensure they have content
+			if isToolMessage && !hasValidContent {
+				// If tool message has no content, create a default content
+				defaultText := "Tool result received"
+				if msg.ToolCallID != nil {
+					defaultText = fmt.Sprintf("Tool result for call ID: %s", *msg.ToolCallID)
+				}
+				message.Content = []BedrockMistralContent{{Text: defaultText}}
+				hasValidContent = true
 			}
 
-			bedrockMessages = append(bedrockMessages, message)
+			// Final safety check: ensure message always has content
+			if !hasValidContent {
+				message.Content = []BedrockMistralContent{{Text: "Message content"}}
+				hasValidContent = true
+			}
+
+			// Only add messages that have valid content or tool calls
+			if hasValidContent || len(filteredToolCalls) > 0 {
+				if len(filteredToolCalls) > 0 {
+					message.ToolCalls = &filteredToolCalls
+				}
+				bedrockMessages = append(bedrockMessages, message)
+			}
 		}
 
 		body := map[string]interface{}{
@@ -740,28 +762,12 @@ func (provider *BedrockProvider) prepareChatCompletionMessages(messages []schema
 
 // GetChatCompletionTools prepares tool specifications for Bedrock's API.
 // It formats tool definitions for different model types (Anthropic and Mistral).
-// Returns an array of tool specifications for the given model.
-func (provider *BedrockProvider) getChatCompletionTools(params *schemas.ModelParameters, model string) []BedrockAnthropicToolCall {
-	var tools []BedrockAnthropicToolCall
-
-	switch model {
-	case "anthropic.claude-instant-v1:2":
-		fallthrough
-	case "anthropic.claude-v2":
-		fallthrough
-	case "anthropic.claude-v2:1":
-		fallthrough
-	case "anthropic.claude-3-sonnet-20240229-v1:0":
-		fallthrough
-	case "anthropic.claude-3-5-sonnet-20240620-v1:0":
-		fallthrough
-	case "anthropic.claude-3-5-sonnet-20241022-v2:0":
-		fallthrough
-	case "anthropic.claude-3-5-haiku-20241022-v1:0":
-		fallthrough
-	case "anthropic.claude-3-opus-20240229-v1:0":
-		fallthrough
-	case "anthropic.claude-3-7-sonnet-20250219-v1:0":
+// Returns tool specifications appropriate for the given model type.
+func (provider *BedrockProvider) getChatCompletionTools(params *schemas.ModelParameters, model string) (interface{}, *schemas.BifrostError) {
+	switch {
+	case strings.Contains(model, "anthropic."), strings.Contains(model, "mistral."):
+		// Both Anthropic and Mistral models on Bedrock use toolConfig.tools with toolSpec structure
+		var tools []BedrockAnthropicToolCall
 		for _, tool := range *params.Tools {
 			tools = append(tools, BedrockAnthropicToolCall{
 				ToolSpec: BedrockAnthropicToolSpec{
@@ -775,21 +781,19 @@ func (provider *BedrockProvider) getChatCompletionTools(params *schemas.ModelPar
 				},
 			})
 		}
-	}
+		return tools, nil
 
-	return tools
+	default:
+		return nil, newConfigurationError(fmt.Sprintf("unsupported model for tool calling: %s", model), schemas.Bedrock)
+	}
 }
 
 // prepareTextCompletionParams prepares text completion parameters for Bedrock's API.
 // It handles parameter mapping and conversion for different model types.
 // Returns the modified parameters map with model-specific adjustments.
 func (provider *BedrockProvider) prepareTextCompletionParams(params map[string]interface{}, model string) map[string]interface{} {
-	switch model {
-	case "anthropic.claude-instant-v1:2":
-		fallthrough
-	case "anthropic.claude-v2":
-		fallthrough
-	case "anthropic.claude-v2:1":
+	switch {
+	case strings.Contains(model, "anthropic."):
 		// Check if there is a key entry for max_tokens
 		if maxTokens, exists := params["max_tokens"]; exists {
 			// Check if max_tokens_to_sample is already present
@@ -893,6 +897,46 @@ func (provider *BedrockProvider) extractToolsFromHistory(messages []schemas.Bifr
 	return hasToolContent, toolsFromHistory
 }
 
+// prepareToolChoice prepares tool choice configuration for different model types.
+// Both Anthropic and Mistral models on Bedrock support toolChoice in toolConfig.
+func (provider *BedrockProvider) prepareToolChoice(params *schemas.ModelParameters, model string) *BedrockToolChoice {
+	if params == nil || params.ToolChoice == nil {
+		return nil
+	}
+
+	switch {
+	case strings.Contains(model, "anthropic."), strings.Contains(model, "mistral."):
+		// Both Anthropic and Mistral models use toolChoice in toolConfig
+		// AWS Bedrock supports: "auto", "any", "tool" as union types
+		if params.ToolChoice.ToolChoiceStr != nil {
+			choice := *params.ToolChoice.ToolChoiceStr
+			switch choice {
+			case string(schemas.ToolChoiceTypeAuto):
+				return &BedrockToolChoice{
+					Auto: map[string]interface{}{},
+				}
+			case string(schemas.ToolChoiceTypeAny):
+				return &BedrockToolChoice{
+					Any: map[string]interface{}{},
+				}
+			}
+			// Note: "none" is not supported by AWS Bedrock for these models
+		} else if params.ToolChoice.ToolChoiceStruct != nil {
+			if params.ToolChoice.ToolChoiceStruct.Type == schemas.ToolChoiceTypeFunction &&
+				params.ToolChoice.ToolChoiceStruct.Function.Name != "" {
+
+				return &BedrockToolChoice{
+					Tool: &BedrockSpecificTool{
+						Name: params.ToolChoice.ToolChoiceStruct.Function.Name,
+					},
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 // ChatCompletion performs a chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
@@ -910,9 +954,20 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 
 	// Transform tools if present
 	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
-		preparedParams["toolConfig"] = map[string]interface{}{
-			"tools": provider.getChatCompletionTools(params, model),
+		tools, err := provider.getChatCompletionTools(params, model)
+		if err != nil {
+			return nil, err
 		}
+		toolConfig := map[string]interface{}{
+			"tools": tools,
+		}
+
+		// Add tool choice if specified
+		if toolChoice := provider.prepareToolChoice(params, model); toolChoice != nil {
+			toolConfig["toolChoice"] = toolChoice
+		}
+
+		preparedParams["toolConfig"] = toolConfig
 	} else {
 		// Check if conversation history contains tool use/result blocks
 		// Bedrock requires toolConfig when such blocks are present
@@ -1051,7 +1106,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx context.Context, model strin
 // It sets required headers, calculates the request body hash, and signs the request
 // using the provided AWS credentials.
 // Returns a BifrostError if signing fails.
-func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string) *schemas.BifrostError {
+func signAWSRequest(ctx context.Context, req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string) *schemas.BifrostError {
 	// Set required headers before signing
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -1074,19 +1129,31 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 		bodyHash = hex.EncodeToString(hash[:])
 	}
 
-	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion(region),
-		config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
-			creds := aws.Credentials{
-				AccessKeyID:     accessKey,
-				SecretAccessKey: secretKey,
-			}
-			if sessionToken != nil && *sessionToken != "" {
-				creds.SessionToken = *sessionToken
-			}
-			return creds, nil
-		})),
-	)
+	var cfg aws.Config
+	var err error
+
+	// If both accessKey and secretKey are empty, use the default credential provider chain
+	// This will automatically use IAM roles, environment variables, shared credentials, etc.
+	if accessKey == "" && secretKey == "" {
+		cfg, err = config.LoadDefaultConfig(ctx,
+			config.WithRegion(region),
+		)
+	} else {
+		// Use explicit credentials when provided
+		cfg, err = config.LoadDefaultConfig(ctx,
+			config.WithRegion(region),
+			config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+				creds := aws.Credentials{
+					AccessKeyID:     accessKey,
+					SecretAccessKey: secretKey,
+				}
+				if sessionToken != nil && *sessionToken != "" {
+					creds.SessionToken = *sessionToken
+				}
+				return creds, nil
+			})),
+		)
+	}
 	if err != nil {
 		return newBifrostOperationError("failed to load aws config", err, schemas.Bedrock)
 	}
@@ -1095,13 +1162,13 @@ func signAWSRequest(req *http.Request, accessKey, secretKey string, sessionToken
 	signer := v4.NewSigner()
 
 	// Get credentials
-	creds, err := cfg.Credentials.Retrieve(context.TODO())
+	creds, err := cfg.Credentials.Retrieve(ctx)
 	if err != nil {
 		return newBifrostOperationError("failed to retrieve aws credentials", err, schemas.Bedrock)
 	}
 
 	// Sign the request with AWS Signature V4
-	if err := signer.SignHTTP(context.TODO(), creds, req, bodyHash, service, region, time.Now()); err != nil {
+	if err := signer.SignHTTP(ctx, creds, req, bodyHash, service, region, time.Now()); err != nil {
 		return newBifrostOperationError("failed to sign request", err, schemas.Bedrock)
 	}
 
@@ -1116,9 +1183,9 @@ func (provider *BedrockProvider) Embedding(ctx context.Context, model string, ke
 	}
 
 	switch {
-	case strings.HasPrefix(model, "amazon.titan-embed-text"):
+	case strings.Contains(model, "amazon.titan-embed-text"):
 		return provider.handleTitanEmbedding(ctx, model, *key.BedrockKeyConfig, input, params)
-	case strings.HasPrefix(model, "cohere.embed"):
+	case strings.Contains(model, "cohere.embed"):
 		return provider.handleCohereEmbedding(ctx, model, *key.BedrockKeyConfig, input, params)
 	default:
 		return nil, newConfigurationError("embedding is not supported for this Bedrock model", schemas.Bedrock)
@@ -1277,9 +1344,21 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 
 	// Transform tools if present
 	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
-		preparedParams["toolConfig"] = map[string]interface{}{
-			"tools": provider.getChatCompletionTools(params, model),
+		tools, err := provider.getChatCompletionTools(params, model)
+		if err != nil {
+			return nil, err
 		}
+
+		toolConfig := map[string]interface{}{
+			"tools": tools,
+		}
+
+		// Add tool choice if specified
+		if toolChoice := provider.prepareToolChoice(params, model); toolChoice != nil {
+			toolConfig["toolChoice"] = toolChoice
+		}
+
+		preparedParams["toolConfig"] = toolConfig
 	} else {
 		// Check if conversation history contains tool use/result blocks
 		// Bedrock requires toolConfig when such blocks are present
@@ -1328,13 +1407,9 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 	// Set any extra headers from network config
 	setExtraHeadersHTTP(req, provider.networkConfig.ExtraHeaders, nil)
 
-	// Sign the request for AWS
-	if key.BedrockKeyConfig.SecretKey != "" {
-		if signErr := signAWSRequest(req, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, region, "bedrock"); signErr != nil {
-			return nil, signErr
-		}
-	} else {
-		return nil, newConfigurationError("secret access key not set", schemas.Bedrock)
+	// Sign the request using either explicit credentials or IAM role authentication
+	if signErr := signAWSRequest(ctx, req, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, region, "bedrock"); signErr != nil {
+		return nil, signErr
 	}
 
 	// Make the request
@@ -1365,6 +1440,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		// AWS Event Streaming can have large buffers
 		buf := make([]byte, 0, 64*1024)
 		scanner.Buffer(buf, 1024*1024)
+
+		chunkIndex := -1
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -1402,6 +1479,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 			if jsonEnd == -1 {
 				continue
 			}
+
+			chunkIndex++
 
 			// Extract the complete JSON object
 			jsonStr := jsonData[:jsonEnd]
@@ -1447,7 +1526,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 								},
 							},
 							ExtraFields: schemas.BifrostResponseExtraFields{
-								Provider: schemas.Bedrock,
+								Provider:   schemas.Bedrock,
+								ChunkIndex: chunkIndex,
 							},
 						}
 
@@ -1504,7 +1584,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 								},
 							},
 							ExtraFields: schemas.BifrostResponseExtraFields{
-								Provider: schemas.Bedrock,
+								Provider:   schemas.Bedrock,
+								ChunkIndex: chunkIndex,
 							},
 						}
 
@@ -1538,7 +1619,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 							},
 						},
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: schemas.Bedrock,
+							Provider:   schemas.Bedrock,
+							ChunkIndex: chunkIndex,
 						},
 					}
 
@@ -1568,7 +1650,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 							},
 						},
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: schemas.Bedrock,
+							Provider:   schemas.Bedrock,
+							ChunkIndex: chunkIndex,
 						},
 					}
 
@@ -1617,7 +1700,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 							},
 						},
 						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider: schemas.Bedrock,
+							Provider:   schemas.Bedrock,
+							ChunkIndex: chunkIndex,
 						},
 					}
 

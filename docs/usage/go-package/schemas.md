@@ -745,8 +745,8 @@ type BifrostError struct {
 }
 
 type StreamControl struct {
-	LogError   *bool   `json:"log_error,omitempty"`
-	SkipStream *bool   `json:"skip_stream,omitempty"`
+    LogError   *bool   `json:"log_error,omitempty"`
+    SkipStream *bool   `json:"skip_stream,omitempty"`
 }
 
 type ErrorField struct {
@@ -801,6 +801,9 @@ providers := []schemas.ModelProvider{
     schemas.Mistral,     // Mistral models
     schemas.Ollama,      // Local Ollama
     schemas.Groq,        // Groq models
+    schemas.Parasail,    // Parasail models
+    schemas.SGLang,      // SGLang models
+    schemas.Cerebras,    // Cerebras models
 }
 
 // Popular model choices

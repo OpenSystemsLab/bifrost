@@ -1,22 +1,24 @@
-<div align="center">
-<a href="https://www.producthunt.com/products/maxim-ai?embed=true&utm_source=badge-featured&utm_medium=badge&utm_source=badge-bifrost&#0045;2" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1000604&theme=dark&t=1754378611200" alt="Bifrost - The&#0032;fastest&#0032;LLM&#0032;gateway&#0032;in&#0032;the&#0032;market | Product Hunt" style="width: 250px; height: 54px;" width="250" height="54" /></a>
-</div>
-
 # Bifrost
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/maximhq/bifrost/core)](https://goreportcard.com/report/github.com/maximhq/bifrost/core)
+[![Discord badge](https://dcbadge.limes.pink/api/server/https://discord.gg/exN5KAydbU?style=flat)](https://discord.gg/exN5KAydbU)
+[![Known Vulnerabilities](https://snyk.io/test/github/maximhq/bifrost/badge.svg)](https://snyk.io/test/github/maximhq/bifrost)
+[![codecov](https://codecov.io/gh/maximhq/bifrost/branch/main/graph/badge.svg)](https://codecov.io/gh/maximhq/bifrost)
+![Docker Pulls](https://img.shields.io/docker/pulls/maximhq/bifrost)
+[<img src="https://run.pstmn.io/button.svg" alt="Run In Postman" style="width: 95px; height: 21px;">](https://app.getpostman.com/run-collection/31642484-2ba0e658-4dcd-49f4-845a-0c7ed745b916?action=collection%2Ffork&source=rip_markdown&collection-url=entityId%3D31642484-2ba0e658-4dcd-49f4-845a-0c7ed745b916%26entityType%3Dcollection%26workspaceId%3D63e853c8-9aec-477f-909c-7f02f543150e)
+[![License](https://img.shields.io/github/license/maximhq/bifrost)](LICENSE)
 
-**The fastest way to build AI applications that never go down.**
+## The fastest way to build AI applications that never go down
 
-Bifrost is a high-performance AI gateway that connects you to 10+ providers (OpenAI, Anthropic, Bedrock, and more) through a single API. Get automatic failover, load balancing, and zero-downtime deployments in under 30 seconds.
-
-![Bifrost](./docs/media/cover.png)
+Bifrost is a high-performance AI gateway that connects you to 12+ providers (OpenAI, Anthropic, Bedrock, and more) through a single API. Get automatic failover, load balancing, and zero-downtime deployments in under 30 seconds.
 
 🚀 **Just launched:** Native MCP (Model Context Protocol) support for seamless tool integration  
 ⚡ **Performance:** Adds only 11µs latency while handling 5,000+ RPS  
 🛡️ **Reliability:** 100% uptime with automatic provider failover
 
 ## ⚡ Quickstart (30 seconds)
+
+![Get started](./docs/media/getting-started.png)
 
 **Go from zero to production-ready AI gateway in under a minute.** Here's how:
 
@@ -73,6 +75,7 @@ Your AI gateway is now running with a beautiful web interface. You can:
 ## 📑 Table of Contents
 
 - [Bifrost](#bifrost)
+  - [The fastest way to build AI applications that never go down](#the-fastest-way-to-build-ai-applications-that-never-go-down)
   - [⚡ Quickstart (30 seconds)](#-quickstart-30-seconds)
     - [Using Bifrost HTTP Transport](#using-bifrost-http-transport)
   - [📑 Table of Contents](#-table-of-contents)
@@ -245,7 +248,7 @@ Choose higher settings (like the t3.xlarge profile above) for raw speed, or lowe
 <details>
 <summary><strong>🎯 I want to understand what Bifrost can do</strong></summary>
 
-- **[🔗 Multi-Provider Support](./docs/usage/providers.md)** - Connect to 10+ AI providers with one API
+- **[🔗 Multi-Provider Support](./docs/usage/providers.md)** - Connect to 12+ AI providers with one API
 - **[🛡️ Fallback & Reliability](./docs/usage/providers.md#fallback-mechanisms)** - Never lose a request with automatic failover
 - **[🛠️ MCP Tool Integration](./docs/usage/http-transport/configuration/mcp.md)** - Give your AI external capabilities
 - **[🔌 Plugin Ecosystem](./docs/usage/http-transport/configuration/plugins.md)** - Extend Bifrost with custom middleware
