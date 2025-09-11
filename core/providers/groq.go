@@ -100,7 +100,6 @@ func (provider *GroqProvider) ChatCompletion(ctx context.Context, key schemas.Ke
 	// Use centralized OpenAI converter since Groq is OpenAI-compatible
 	openaiReq := openai.ConvertChatRequestToOpenAI(input)
 
-
 	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Groq)
@@ -177,7 +176,7 @@ func (provider *GroqProvider) Embedding(ctx context.Context, key schemas.Key, in
 func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since Groq is OpenAI-compatible
 	openaiReq := openai.ConvertChatRequestToOpenAI(input)
-	openaiReq.Stream = schemas.Ptr(true)
+	openaiReq.Stream = Ptr(true)
 
 	// Prepare Groq headers
 	headers := map[string]string{

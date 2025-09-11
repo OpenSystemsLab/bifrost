@@ -12,6 +12,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/schemas/providers/azure"
 	"github.com/maximhq/bifrost/core/schemas/providers/openai"
 	"github.com/valyala/fasthttp"
 )
@@ -267,7 +268,7 @@ func (provider *CerebrasProvider) Embedding(ctx context.Context, key schemas.Key
 func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 
 	openaiReq := openai.ConvertChatRequestToOpenAI(input)
-	openaiReq.Stream = schemas.Ptr(true)
+	openaiReq.Stream = Ptr(true)
 
 	// Prepare Cerebras headers
 	headers := map[string]string{

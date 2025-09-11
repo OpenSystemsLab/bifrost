@@ -243,7 +243,7 @@ func convertToolMessage(msg schemas.BifrostMessage) (BedrockMessage, error) {
 		ToolResult: &BedrockToolResult{
 			ToolUseID: *msg.ToolMessage.ToolCallID,
 			Content:   toolResultContent,
-			Status:    schemas.Ptr("success"), // Default to success
+			Status:    Ptr("success"), // Default to success
 		},
 	}
 
@@ -496,10 +496,10 @@ func checkMessageForToolContent(msg schemas.BifrostMessage, toolsMap map[string]
 			if toolCall.Function.Name != nil {
 				if _, exists := toolsMap[*toolCall.Function.Name]; !exists {
 					toolsMap[*toolCall.Function.Name] = BedrockTool{
-								ToolSpec: &BedrockToolSpec{
-								Name: *toolCall.Function.Name,
-								Description: schemas.Ptr("Tool extracted from conversation history"),
-								InputSchema: BedrockToolInputSchema{
+						ToolSpec: &BedrockToolSpec{
+							Name:        *toolCall.Function.Name,
+							Description: Ptr("Tool extracted from conversation history"),
+							InputSchema: BedrockToolInputSchema{
 								JSON: map[string]interface{}{
 									"type":       "object",
 									"properties": map[string]interface{}{},

@@ -176,6 +176,40 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, key schemas.
 	return response, nil
 }
 
+// prepareOpenAIChatRequest formats messages for the OpenAI API.
+// It handles both text and image content in messages.
+// Returns a slice of formatted messages and any additional parameters.
+// sanitizeBifrostMessages performs in-place image URL sanitization for any content blocks
+// with type image_url in the provided Bifrost messages and returns the sanitized slice.
+func sanitizeBifrostMessages(messages []schemas.BifrostMessage) []schemas.BifrostMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	for mi := range messages {
+		content := &messages[mi].Content
+		if content.ContentBlocks == nil {
+			continue
+		}
+		blocks := *content.ContentBlocks
+		for bi := range blocks {
+			if blocks[bi].Type == schemas.ContentBlockTypeImage && blocks[bi].ImageURL != nil {
+				if sanitizedURL, _ := SanitizeImageURL(blocks[bi].ImageURL.URL); sanitizedURL != "" {
+					blocks[bi].ImageURL.URL = sanitizedURL
+				}
+			}
+		}
+		*content.ContentBlocks = blocks
+	}
+	return messages
+}
+
+func prepareOpenAIChatRequest(messages []schemas.BifrostMessage, params *schemas.ModelParameters) ([]schemas.BifrostMessage, map[string]interface{}) {
+	// Sanitize any image URLs in Bifrost messages and return them directly
+	sanitized := sanitizeBifrostMessages(messages)
+	preparedParams := prepareParams(params)
+	return sanitized, preparedParams
+}
+
 // Embedding generates embeddings for the given input text(s).
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
@@ -208,7 +242,9 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, key schemas.Key, 
 	)
 }
 
-func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, url string, requestBody interface{}, key schemas.Key, params *schemas.ModelParameters, extraHeaders map[string]string, providerName schemas.ModelProvider, sendBackRawResponse bool, logger schemas.Logger) (*schemas.BifrostResponse, *schemas.BifrostError) {
+// handleOpenAIEmbeddingRequest handles embedding requests for OpenAI-compatible APIs.
+// This shared function reduces code duplication between providers that use the same embedding request format.
+func handleOpenAIEmbeddingRequest(ctx context.Context, client *fasthttp.Client, url string, requestBody *openai.OpenAIEmbeddingRequest, key schemas.Key, params *schemas.ModelParameters, extraHeaders map[string]string, providerName schemas.ModelProvider, sendBackRawResponse bool, logger schemas.Logger) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	jsonBody, err := sonic.Marshal(requestBody)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, providerName)
@@ -277,7 +313,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	// Use centralized converter
 	openaiReq := openai.ConvertChatRequestToOpenAI(input)
-	openaiReq.Stream = schemas.Ptr(true)
+	openaiReq.Stream = Ptr(true)
 	openaiReq.StreamOptions = &map[string]interface{}{
 		"include_usage": true,
 	}
@@ -309,7 +345,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 	)
 }
 
-// performOpenAICompatibleStreaming handles streaming for OpenAI-compatible APIs (OpenAI, Azure).
+// handleOpenAIStreaming handles streaming for OpenAI-compatible APIs.
 // This shared function reduces code duplication between providers that use the same SSE format.
 func handleOpenAIStreaming[T any](
 	ctx context.Context,
@@ -367,7 +403,7 @@ func handleOpenAIStreaming[T any](
 		usage := &schemas.LLMUsage{}
 
 		var finishReason *string
-		var id string
+		var messageID string
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -443,8 +479,8 @@ func handleOpenAIStreaming[T any](
 				response.Choices[0].FinishReason = nil
 			}
 
-			if response.ID != "" && id == "" {
-				id = response.ID
+			if response.ID != "" && messageID == "" {
+				messageID = response.ID
 			}
 
 			// Handle regular content chunks
@@ -463,7 +499,7 @@ func handleOpenAIStreaming[T any](
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			processAndSendError(ctx, postHookRunner, err, responseChan, logger)
 		} else {
-			response := createBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, params, providerName)
+			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, params, providerName)
 			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
 		}
 	}()
@@ -553,7 +589,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 
 	// Use centralized converter
 	openaiReq := openai.ConvertSpeechRequestToOpenAI(input)
-	openaiReq.StreamFormat = schemas.Ptr("sse")
+	openaiReq.StreamFormat = Ptr("sse")
 
 	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
@@ -791,7 +827,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 
 	// Use centralized converter
 	openaiReq := openai.ConvertTranscriptionRequestToOpenAI(input)
-	openaiReq.Stream = schemas.Ptr(true)
+	openaiReq.Stream = Ptr(true)
 
 	// Create multipart form
 	var body bytes.Buffer

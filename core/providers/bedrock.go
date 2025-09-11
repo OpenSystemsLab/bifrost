@@ -793,8 +793,8 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 
 		// Create tool call structure for start event
 		var toolCall schemas.ToolCall
-		toolCall.Type = schemas.Ptr("function")
-		toolCall.Function.Name = schemas.Ptr(toolUseStart.Name)
+		toolCall.Type = Ptr("function")
+		toolCall.Function.Name = Ptr(toolUseStart.Name)
 		toolCall.Function.Arguments = "{}" // Start with empty arguments
 
 		streamResponse := &schemas.BifrostResponse{
@@ -864,7 +864,7 @@ func (provider *BedrockProvider) processEventBuffer(ctx context.Context, postHoo
 
 			// Create tool call structure
 			var toolCall schemas.ToolCall
-			toolCall.Type = schemas.Ptr("function")
+			toolCall.Type = Ptr("function")
 
 			// For streaming, we need to accumulate tool use data
 			// This is a simplified approach - in practice, you'd need to track tool calls across chunks

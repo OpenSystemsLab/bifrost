@@ -178,7 +178,7 @@ func (provider *OllamaProvider) Embedding(ctx context.Context, key schemas.Key, 
 func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since Ollama is OpenAI-compatible
 	openaiReq := openai.ConvertChatRequestToOpenAI(input)
-	openaiReq.Stream = schemas.Ptr(true)
+	openaiReq.Stream = Ptr(true)
 
 	// Prepare Ollama headers (Ollama typically doesn't require authorization, but we include it if provided)
 	headers := map[string]string{

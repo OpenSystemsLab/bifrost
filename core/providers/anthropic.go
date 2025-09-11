@@ -294,6 +294,61 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schem
 	return bifrostResponse, nil
 }
 
+// Responses performs a chat completion request to Anthropic's API.
+// It formats the request, sends it to Anthropic, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
+func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+		return nil, err
+	}
+
+	// Convert to Anthropic format using the centralized converter
+	anthropicReq, convertErr := anthropic.ConvertFromResponsesAPIRequest(input)
+	if convertErr != nil {
+		return nil, newBifrostOperationError("failed to convert request", convertErr, provider.GetProviderKey())
+	}
+	if anthropicReq == nil {
+		return nil, newBifrostOperationError("failed to convert request", fmt.Errorf("conversion returned nil"), provider.GetProviderKey())
+	}
+
+	// Use struct directly for JSON marshaling
+	responseBody, err := provider.completeRequest(ctx, anthropicReq, provider.networkConfig.BaseURL+"/v1/messages", key.Value)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create response object from pool
+	response := acquireAnthropicChatResponse()
+	defer releaseAnthropicChatResponse(response)
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Create final response
+	bifrostResponse := &schemas.BifrostResponse{}
+	bifrostResponse, convertErr = anthropic.ConvertAnthropicResponseToResponsesAPI(response)
+	if convertErr != nil {
+		return nil, newBifrostOperationError("failed to convert response", convertErr, provider.GetProviderKey())
+	}
+
+	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+		Provider: provider.GetProviderKey(),
+	}
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	if input.Params != nil {
+		bifrostResponse.ExtraFields.Params = *input.Params
+	}
+
+	return bifrostResponse, nil
+}
+
 // Embedding is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "anthropic")
@@ -314,7 +369,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 	}
 
 	// Enable streaming
-	anthropicReq.Stream = schemas.Ptr(true)
+	anthropicReq.Stream = Ptr(true)
 
 	// Prepare Anthropic headers
 	headers := map[string]string{

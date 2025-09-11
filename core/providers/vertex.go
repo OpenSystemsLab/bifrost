@@ -146,7 +146,6 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 	}
 
 	// Format messages for Vertex API
-
 	var requestBody map[string]interface{}
 
 	if strings.Contains(input.Model, "claude") {
@@ -490,7 +489,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 	if strings.Contains(input.Model, "claude") {
 		// Use Anthropic-style streaming for Claude models
 		anthropicReq := anthropic.ConvertChatRequestToAnthropic(input)
-		anthropicReq.Stream = schemas.Ptr(true)
+		anthropicReq.Stream = Ptr(true)
 
 		// Convert struct to map for Vertex API
 		reqBytes, _ := sonic.Marshal(anthropicReq)
@@ -529,7 +528,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 	} else {
 		// Use OpenAI-style streaming for non-Claude models
 		openaiReq := openai.ConvertChatRequestToOpenAI(input)
-		openaiReq.Stream = schemas.Ptr(true)
+		openaiReq.Stream = Ptr(true)
 
 		// Convert struct to map for Vertex API
 		reqBytes, _ := sonic.Marshal(openaiReq)

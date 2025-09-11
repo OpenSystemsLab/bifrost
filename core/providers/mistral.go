@@ -240,7 +240,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, key schemas.Key,
 func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since Mistral is OpenAI-compatible
 	openaiReq := openai.ConvertChatRequestToOpenAI(input)
-	openaiReq.Stream = schemas.Ptr(true)
+	openaiReq.Stream = Ptr(true)
 
 	// Prepare Mistral headers
 	headers := map[string]string{

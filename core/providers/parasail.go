@@ -176,7 +176,7 @@ func (provider *ParasailProvider) Embedding(ctx context.Context, key schemas.Key
 func (provider *ParasailProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since Parasail is OpenAI-compatible
 	openaiReq := openai.ConvertChatRequestToOpenAI(input)
-	openaiReq.Stream = schemas.Ptr(true)
+	openaiReq.Stream = Ptr(true)
 
 	// Prepare Parasail headers
 	headers := map[string]string{

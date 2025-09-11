@@ -272,6 +272,45 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, key schemas.K
 	return response, nil
 }
 
+// Responses performs a responses request to Azure's API.
+// It formats the request, sends it to Azure, and processes the response.
+// Returns a BifrostResponse containing the completion results or an error if the request fails.
+func (provider *AzureProvider) Responses(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Use centralized OpenAI converter since Azure is OpenAI-compatible
+	openaiReq := openai.ConvertChatRequestToOpenAI(input)
+
+	requestBody := openaiReq
+
+	responseBody, err := provider.completeRequest(ctx, requestBody, "responses", key, input.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create response object from pool
+	// response := acquireAzureChatResponse()
+	// defer releaseAzureChatResponse(response)
+
+	response := &schemas.BifrostResponse{}
+
+	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, provider.sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response.ExtraFields.Provider = schemas.Azure
+
+	// Set raw response if enabled
+	if provider.sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	if input.Params != nil {
+		response.ExtraFields.Params = *input.Params
+	}
+
+	return response, nil
+}
+
 // Embedding generates embeddings for the given input text(s) using Azure OpenAI.
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
@@ -316,7 +355,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, key schemas.Key, i
 func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 
 	openaiReq := openai.ConvertChatRequestToOpenAI(input)
-	openaiReq.Stream = schemas.Ptr(true)
+	openaiReq.Stream = Ptr(true)
 
 	if key.AzureKeyConfig == nil {
 		return nil, newConfigurationError("azure key config not set", schemas.Azure)

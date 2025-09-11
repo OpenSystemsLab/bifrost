@@ -235,7 +235,7 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx context.Context, key sche
 func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since OpenRouter is OpenAI-compatible
 	openaiReq := openai.ConvertChatRequestToOpenAI(input)
-	openaiReq.Stream = schemas.Ptr(true)
+	openaiReq.Stream = Ptr(true)
 
 	// Prepare OpenRouter headers
 	headers := map[string]string{

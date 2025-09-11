@@ -30,7 +30,7 @@ func ConvertBifrostRequestToBedrock(bifrostReq *schemas.BifrostRequest) (*Bedroc
 	if len(systemMessages) > 0 {
 		bedrockReq.System = &systemMessages
 	}
-	
+
 	// Convert parameters and configurations
 	convertParameters(bifrostReq, bedrockReq)
 

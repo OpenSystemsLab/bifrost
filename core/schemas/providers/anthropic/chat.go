@@ -201,8 +201,8 @@ func (r *AnthropicMessageRequest) ConvertChatRequestToBifrost() *schemas.Bifrost
 			}
 
 			tools = append(tools, schemas.Tool{
-				Type: "function",
-				Function: schemas.Function{
+				Type: schemas.Ptr("function"),
+				Function: &schemas.Function{
 					Name:        tool.Name,
 					Description: tool.Description,
 					Parameters:  params,
@@ -222,16 +222,16 @@ func (r *AnthropicMessageRequest) ConvertChatRequestToBifrost() *schemas.Bifrost
 		}
 		toolChoice := &schemas.ToolChoice{
 			ToolChoiceStruct: &schemas.ToolChoiceStruct{
-				Type: func() schemas.ToolChoiceType {
+				Type: func() *schemas.ToolChoiceType {
 					if r.ToolChoice.Type == "tool" {
-						return schemas.ToolChoiceTypeFunction
+						return schemas.Ptr(schemas.ToolChoiceTypeFunction)
 					}
-					return schemas.ToolChoiceType(r.ToolChoice.Type)
+					return schemas.Ptr(schemas.ToolChoiceType(r.ToolChoice.Type))
 				}(),
 			},
 		}
 		if r.ToolChoice.Type == "tool" && r.ToolChoice.Name != "" {
-			toolChoice.ToolChoiceStruct.Function = schemas.ToolChoiceFunction{
+			toolChoice.ToolChoiceStruct.Function = &schemas.ToolChoiceFunction{
 				Name: r.ToolChoice.Name,
 			}
 		}
@@ -448,10 +448,10 @@ func ConvertStreamResponseToAnthropic(bifrostResp *schemas.BifrostResponse) stri
 	// Default to empty content_block_delta if no specific type was set
 	if streamResp.Type == "" {
 		streamResp.Type = "content_block_delta"
-		streamResp.Index = schemas.Ptr(0)
+		streamResp.Index = Ptr(0)
 		streamResp.Delta = &AnthropicStreamDelta{
 			Type: "text_delta",
-			Text: schemas.Ptr(""),
+			Text: Ptr(""),
 		}
 	}
 

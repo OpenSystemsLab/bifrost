@@ -230,7 +230,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	// Use centralized OpenAI converter since Gemini uses OpenAI-compatible endpoints
 	openaiReq := openai.ConvertChatRequestToOpenAI(input)
-	openaiReq.Stream = schemas.Ptr(true)
+	openaiReq.Stream = Ptr(true)
 
 	// Prepare Gemini headers
 	headers := map[string]string{
@@ -870,7 +870,7 @@ func prepareGeminiGenerationRequest(input interface{}, params *schemas.ModelPara
 			// Transform Bifrost tools to Gemini format
 			var geminiTools []map[string]interface{}
 			for _, tool := range *params.Tools {
-				if tool.Type == "function" {
+				if *tool.Type == "function" {
 					geminiTool := map[string]interface{}{
 						"functionDeclarations": []map[string]interface{}{
 							{
@@ -909,7 +909,7 @@ func prepareGeminiGenerationRequest(input interface{}, params *schemas.ModelPara
 							functionCallingConfig["mode"] = "AUTO"
 						}
 					} else if params.ToolChoice.ToolChoiceStruct != nil {
-						switch params.ToolChoice.ToolChoiceStruct.Type {
+						switch *params.ToolChoice.ToolChoiceStruct.Type {
 						case schemas.ToolChoiceTypeNone:
 							functionCallingConfig["mode"] = "NONE"
 						case schemas.ToolChoiceTypeAuto:

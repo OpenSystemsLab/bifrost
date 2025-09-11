@@ -89,4 +89,3 @@ func ConvertSpeechRequestToOpenAI(bifrostReq *schemas.BifrostRequest) *OpenAISpe
 
 	return openaiReq
 }
-

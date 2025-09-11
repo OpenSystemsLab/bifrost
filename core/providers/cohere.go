@@ -295,7 +295,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	providerName := provider.GetProviderKey()
 	// Convert to Cohere v2 request and add streaming
 	cohereRequest := cohere.ConvertChatRequestToCohere(input)
-	cohereRequest.Stream = schemas.Ptr(true)
+	cohereRequest.Stream = Ptr(true)
 
 	jsonBody, err := sonic.Marshal(cohereRequest)
 	if err != nil {
