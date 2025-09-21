@@ -246,18 +246,6 @@ func (r *AnthropicMessageRequest) ConvertChatRequestToBifrost() *schemas.Bifrost
 	return bifrostReq
 }
 
-// Helper function to convert interface{} to JSON string
-func jsonifyInput(input interface{}) string {
-	if input == nil {
-		return "{}"
-	}
-	jsonBytes, err := json.Marshal(input)
-	if err != nil {
-		return "{}"
-	}
-	return string(jsonBytes)
-}
-
 // ConvertChatResponseToAnthropic converts a Bifrost response to Anthropic format
 func ConvertChatResponseToAnthropic(bifrostResp *schemas.BifrostResponse) *AnthropicMessageResponse {
 	if bifrostResp == nil {
@@ -731,65 +719,110 @@ func ConvertChatRequestToAnthropic(bifrostReq *schemas.BifrostRequest) *Anthropi
 	return anthropicReq
 }
 
-// convertImageBlock converts a Bifrost image block to Anthropic format
-// Uses the same pattern as the original buildAnthropicImageSourceMap function
-func convertImageBlock(block schemas.ContentBlock) AnthropicContentBlock {
-	imageBlock := AnthropicContentBlock{
-		Type:   "image",
-		Source: &AnthropicImageSource{},
+// ConvertAnthropicResponseToBifrost converts an Anthropic message response to Bifrost format
+func ConvertAnthropicResponseToBifrost(response *AnthropicMessageResponse) *schemas.BifrostResponse {
+	if response == nil {
+		return nil
 	}
 
-	// Use the centralized utility functions from schemas package
-	sanitizedURL, _ := schemas.SanitizeImageURL(block.ImageURL.URL)
-	urlTypeInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
-
-	formattedImgContent := &AnthropicImageContent{
-		Type: urlTypeInfo.Type,
+	// Initialize Bifrost response
+	bifrostResponse := &schemas.BifrostResponse{
+		ID:    response.ID,
+		Model: response.Model,
 	}
 
-	if urlTypeInfo.MediaType != nil {
-		formattedImgContent.MediaType = *urlTypeInfo.MediaType
-	}
+	// Collect all content and tool calls into a single message
+	var toolCalls []schemas.ToolCall
+	var thinking string
+	var contentBlocks []schemas.ContentBlock
 
-	if urlTypeInfo.DataURLWithoutPrefix != nil {
-		formattedImgContent.URL = *urlTypeInfo.DataURLWithoutPrefix
-	} else {
-		formattedImgContent.URL = sanitizedURL
-	}
+	// Process content and tool calls
+	for _, c := range response.Content {
+		switch c.Type {
+		case "thinking":
+			if c.Thinking != nil {
+				thinking = *c.Thinking
+			}
+		case "text":
+			if c.Text != nil {
+				contentBlocks = append(contentBlocks, schemas.ContentBlock{
+					Type: schemas.ContentBlockTypeText,
+					Text: c.Text,
+				})
+			}
+		case "tool_use":
+			if c.ID != nil && c.Name != nil {
+				function := schemas.FunctionCall{
+					Name: c.Name,
+				}
 
-	// Convert to Anthropic source format
-	if formattedImgContent.Type == schemas.ImageContentTypeURL {
-		imageBlock.Source.Type = "url"
-		imageBlock.Source.URL = &formattedImgContent.URL
-	} else {
-		if formattedImgContent.MediaType != "" {
-			imageBlock.Source.MediaType = &formattedImgContent.MediaType
+				// Marshal the input to JSON string
+				if c.Input != nil {
+					args, err := json.Marshal(c.Input)
+					if err != nil {
+						function.Arguments = fmt.Sprintf("%v", c.Input)
+					} else {
+						function.Arguments = string(args)
+					}
+				} else {
+					function.Arguments = "{}"
+				}
+
+				toolCalls = append(toolCalls, schemas.ToolCall{
+					Type:     schemas.Ptr("function"),
+					ID:       c.ID,
+					Function: function,
+				})
+			}
 		}
-		imageBlock.Source.Type = "base64"
-		imageBlock.Source.Data = &formattedImgContent.URL // URL field contains base64 data string
 	}
 
-	return imageBlock
-}
+	// Create the assistant message
+	var assistantMessage *schemas.AssistantMessage
 
-// ConvertTextRequestToAnthropic converts a Bifrost text completion request to Anthropic format
-func ConvertTextRequestToAnthropic(model string, text string, params *schemas.ModelParameters) *AnthropicTextRequest {
-	anthropicReq := &AnthropicTextRequest{
-		Model:             model,
-		Prompt:            fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", text),
-		MaxTokensToSample: 4096, // Default value
-	}
-
-	// Convert parameters
-	if params != nil {
-		if params.MaxTokens != nil {
-			anthropicReq.MaxTokensToSample = *params.MaxTokens
+	// Create AssistantMessage if we have tool calls or thinking
+	if len(toolCalls) > 0 || thinking != "" {
+		assistantMessage = &schemas.AssistantMessage{}
+		if len(toolCalls) > 0 {
+			assistantMessage.ToolCalls = &toolCalls
 		}
-		anthropicReq.Temperature = params.Temperature
-		anthropicReq.TopP = params.TopP
-		anthropicReq.TopK = params.TopK
-		anthropicReq.StopSequences = params.StopSequences
+		if thinking != "" {
+			assistantMessage.Thought = &thinking
+		}
 	}
 
-	return anthropicReq
+	// Create a single choice with the collected content
+	bifrostResponse.Choices = []schemas.BifrostResponseChoice{
+		{
+			Index: 0,
+			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
+				Message: schemas.BifrostMessage{
+					Role: schemas.ModelChatMessageRoleAssistant,
+					Content: schemas.MessageContent{
+						ContentBlocks: &contentBlocks,
+					},
+					AssistantMessage: assistantMessage,
+				},
+				StopString: response.StopSequence,
+			},
+			FinishReason: func() *string {
+				if response.StopReason != nil && *response.StopReason != "" {
+					mapped := MapAnthropicFinishReason(*response.StopReason)
+					return &mapped
+				}
+				return nil
+			}(),
+		},
+	}
+
+	// Convert usage information
+	if response.Usage != nil {
+		bifrostResponse.Usage = &schemas.LLMUsage{
+			PromptTokens:     response.Usage.InputTokens,
+			CompletionTokens: response.Usage.OutputTokens,
+			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
+		}
+	}
+
+	return bifrostResponse
 }

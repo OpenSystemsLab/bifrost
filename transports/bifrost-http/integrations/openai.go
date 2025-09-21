@@ -121,7 +121,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					return openai.ConvertStreamResponseToOpenAI(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return openai.ConvertStreamErrorToOpenAI(err)
+					return openai.ConvertErrorToOpenAI(err)
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -190,7 +190,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					return openai.ConvertStreamResponseToOpenAI(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return openai.ConvertStreamErrorToOpenAI(err)
+					return openai.ConvertErrorToOpenAI(err)
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -227,7 +227,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					return openai.ConvertStreamResponseToOpenAI(resp), nil
 				},
 				ErrorConverter: func(err *schemas.BifrostError) interface{} {
-					return openai.ConvertStreamErrorToOpenAI(err)
+					return openai.ConvertErrorToOpenAI(err)
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),

@@ -13,14 +13,13 @@ import (
 	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/schemas/providers/openai"
-	"github.com/maximhq/bifrost/core/schemas/providers/azure"
 	"github.com/valyala/fasthttp"
 )
 
 // cerebrasTextResponsePool provides a pool for Cerebras text completion response objects.
 var cerebrasTextResponsePool = sync.Pool{
 	New: func() interface{} {
-		return &azure.AzureTextResponse{}
+		return &openai.OpenAITextCompletionResponse{}
 	},
 }
 
@@ -46,14 +45,14 @@ var cerebrasTextResponsePool = sync.Pool{
 // }
 
 // acquireCerebrasTextResponse gets a Cerebras text completion response from the pool and resets it.
-func acquireCerebrasTextResponse() *azure.AzureTextResponse {
-	resp := cerebrasTextResponsePool.Get().(*azure.AzureTextResponse)
-	*resp = azure.AzureTextResponse{} // Reset the struct
+func acquireCerebrasTextResponse() *openai.OpenAITextCompletionResponse {
+	resp := cerebrasTextResponsePool.Get().(*openai.OpenAITextCompletionResponse)
+	*resp = openai.OpenAITextCompletionResponse{} // Reset the struct
 	return resp
 }
 
 // releaseCerebrasTextResponse returns a Cerebras text completion response to the pool.
-func releaseCerebrasTextResponse(resp *azure.AzureTextResponse) {
+func releaseCerebrasTextResponse(resp *openai.OpenAITextCompletionResponse) {
 	if resp != nil {
 		cerebrasTextResponsePool.Put(resp)
 	}
@@ -88,7 +87,7 @@ func NewCerebrasProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	// Pre-warm response pools
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		// cerebrasChatResponsePool.Put(&schemas.BifrostResponse{})
-		cerebrasTextResponsePool.Put(&azure.AzureTextResponse{})
+		cerebrasTextResponsePool.Put(&openai.OpenAITextCompletionResponse{})
 	}
 
 	// Configure proxy if provided
@@ -117,14 +116,12 @@ func (provider *CerebrasProvider) GetProviderKey() schemas.ModelProvider {
 // TextCompletion performs a text completion request to Cerebras's API.
 // It formats the request, sends it to Cerebras, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *CerebrasProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	preparedParams := prepareParams(params)
-
-	// Merge additional parameters
-	requestBody := mergeConfig(map[string]interface{}{
-		"model":  model,
-		"prompt": text,
-	}, preparedParams)
+func (provider *CerebrasProvider) TextCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Use centralized OpenAI text converter (Cerebras is OpenAI-compatible)
+	openaiReq := openai.ConvertTextRequestToOpenAI(input)
+	if openaiReq == nil {
+		return nil, newConfigurationError("failed to convert text request", schemas.Cerebras)
+	}
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -132,7 +129,7 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, model stri
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	jsonBody, err := sonic.Marshal(requestBody)
+	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
 		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Cerebras)
 	}
@@ -174,68 +171,25 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, model stri
 		return nil, bifrostErr
 	}
 
-	choices := []schemas.BifrostResponseChoice{}
-
-	// Create the completion result
-	if len(response.Choices) > 0 {
-		// Copy text content to avoid pointer to pooled memory
-		textCopy := response.Choices[0].Text
-
-		choices = append(choices, schemas.BifrostResponseChoice{
-			Index: 0,
-			BifrostNonStreamResponseChoice: &schemas.BifrostNonStreamResponseChoice{
-				Message: schemas.BifrostMessage{
-					Role: schemas.ModelChatMessageRoleAssistant,
-					Content: schemas.MessageContent{
-						ContentStr: &textCopy,
-					},
-				},
-				LogProbs: &schemas.LogProbs{
-					Text: response.Choices[0].LogProbs,
-				},
-			},
-			FinishReason: response.Choices[0].FinishReason,
-		})
-	}
-
-	// Copy Usage struct to avoid pointer to pooled memory
-	usageCopy := response.Usage
-
-	// Create final response
-	bifrostResponse := &schemas.BifrostResponse{
-		ID:                response.ID,
-		Choices:           choices,
-		Model:             response.Model,
-		Created:           response.Created,
-		SystemFingerprint: response.SystemFingerprint,
-		Usage:             &usageCopy,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.Cerebras,
-		},
-	}
+	// Use centralized OpenAI response converter (Cerebras is OpenAI-compatible)
+	bifrostResponse := openai.ConvertOpenAITextResponseToBifrost(response, input.Model, schemas.Cerebras)
 
 	// Set raw response if enabled
 	if provider.sendBackRawResponse {
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
-	if params != nil {
-		bifrostResponse.ExtraFields.Params = *params
+	if input.Params != nil {
+		bifrostResponse.ExtraFields.Params = *input.Params
 	}
 
 	return bifrostResponse, nil
 }
 
 // ChatCompletion performs a chat completion request to the Cerebras API.
-func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Use centralized OpenAI converter since Cerebras is OpenAI-compatible
-	bifrostReq := &schemas.BifrostRequest{
-		Provider: schemas.Cerebras,
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
-	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+	openaiReq := openai.ConvertChatRequestToOpenAI(input)
 
 	jsonBody, err := sonic.Marshal(openaiReq)
 	if err != nil {
@@ -294,15 +248,15 @@ func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, model stri
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	if params != nil {
-		response.ExtraFields.Params = *params
+	if input.Params != nil {
+		response.ExtraFields.Params = *input.Params
 	}
 
 	return response, nil
 }
 
 // Embedding is not supported by the Cerebras provider.
-func (provider *CerebrasProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CerebrasProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("embedding", "cerebras")
 }
 
@@ -310,15 +264,9 @@ func (provider *CerebrasProvider) Embedding(ctx context.Context, model string, k
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Cerebras's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	// Use centralized OpenAI converter since Cerebras is OpenAI-compatible
-	bifrostReq := &schemas.BifrostRequest{
-		Provider: schemas.Cerebras,
-		Model:    model,
-		Input:    schemas.RequestInput{ChatCompletionInput: &messages},
-		Params:   params,
-	}
-	openaiReq := openai.ConvertChatRequestToOpenAI(bifrostReq)
+func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+
+	openaiReq := openai.ConvertChatRequestToOpenAI(input)
 	openaiReq.Stream = schemas.Ptr(true)
 
 	// Prepare Cerebras headers
@@ -339,24 +287,24 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, post
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		schemas.Cerebras,
-		params,
+		input.Params,
 		postHookRunner,
 		provider.logger,
 	)
 }
 
-func (provider *CerebrasProvider) Speech(ctx context.Context, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CerebrasProvider) Speech(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech", "cerebras")
 }
 
-func (provider *CerebrasProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.SpeechInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CerebrasProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("speech stream", "cerebras")
 }
 
-func (provider *CerebrasProvider) Transcription(ctx context.Context, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (provider *CerebrasProvider) Transcription(ctx context.Context, key schemas.Key, input *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription", "cerebras")
 }
 
-func (provider *CerebrasProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, input *schemas.TranscriptionInput, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CerebrasProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, input *schemas.BifrostRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, newUnsupportedOperationError("transcription stream", "cerebras")
 }

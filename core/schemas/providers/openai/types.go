@@ -6,28 +6,13 @@ import "github.com/maximhq/bifrost/core/schemas"
 
 // OpenAIChatRequest represents an OpenAI chat completion request
 type OpenAIChatRequest struct {
-	Model               string                   `json:"model"`
-	Messages            []schemas.BifrostMessage `json:"messages"`
-	MaxTokens           *int                     `json:"max_tokens,omitempty"`
-	Temperature         *float64                 `json:"temperature,omitempty"`
-	TopP                *float64                 `json:"top_p,omitempty"`
-	N                   *int                     `json:"n,omitempty"`
-	Stop                interface{}              `json:"stop,omitempty"`
-	PresencePenalty     *float64                 `json:"presence_penalty,omitempty"`
-	FrequencyPenalty    *float64                 `json:"frequency_penalty,omitempty"`
-	LogitBias           map[string]float64       `json:"logit_bias,omitempty"`
-	User                *string                  `json:"user,omitempty"`
-	Tools               *[]schemas.Tool          `json:"tools,omitempty"` // Reuse schema type
-	ToolChoice          *schemas.ToolChoice      `json:"tool_choice,omitempty"`
-	Stream              *bool                    `json:"stream,omitempty"`
-	LogProbs            *bool                    `json:"logprobs,omitempty"`
-	TopLogProbs         *int                     `json:"top_logprobs,omitempty"`
-	ResponseFormat      interface{}              `json:"response_format,omitempty"`
-	Seed                *int                     `json:"seed,omitempty"`
-	MaxCompletionTokens *int                     `json:"max_completion_tokens,omitempty"`
-	ReasoningEffort     *string                  `json:"reasoning_effort,omitempty"`
-	StreamOptions       *map[string]interface{}  `json:"stream_options,omitempty"`
+	Model    string                   `json:"model"`
+	Messages []schemas.BifrostMessage `json:"messages"`
+
+	// Embed ModelParameters to avoid duplication
+	*schemas.ModelParameters
 }
+
 // OpenAISpeechRequest represents an OpenAI speech synthesis request
 type OpenAISpeechRequest struct {
 	Model          string   `json:"model"`
@@ -62,9 +47,19 @@ type OpenAIEmbeddingRequest struct {
 	User           *string     `json:"user,omitempty"`
 }
 
-// IsStreamingRequested implements the StreamingRequest interface
-func (r *OpenAIChatRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
+// OpenAITextCompletionRequest represents an OpenAI text completion request
+type OpenAITextCompletionRequest struct {
+	Model  string      `json:"model"`  // Required: Model to use
+	Prompt interface{} `json:"prompt"` // Required: String or array of strings
+
+	// Embed ModelParameters to avoid duplication
+	*schemas.ModelParameters
+
+	// OpenAI-specific text completion parameters not in core ModelParameters
+	Logprobs *int    `json:"logprobs,omitempty"` // Include log probabilities (note: different from LogProbs bool)
+	Echo     *bool   `json:"echo,omitempty"`     // Echo back the prompt
+	BestOf   *int    `json:"best_of,omitempty"`  // Generate best_of completions server-side
+	Suffix   *string `json:"suffix,omitempty"`   // Suffix for completion
 }
 
 // IsStreamingRequested implements the StreamingRequest interface for speech
@@ -122,7 +117,6 @@ type OpenAIStreamDelta struct {
 	ToolCalls *[]schemas.ToolCall `json:"tool_calls,omitempty"`
 }
 
-
 // OpenAIEmbeddingResponse represents an OpenAI embedding response
 type OpenAIEmbeddingResponse struct {
 	Object            string                     `json:"object"`
@@ -131,6 +125,25 @@ type OpenAIEmbeddingResponse struct {
 	Usage             *schemas.LLMUsage          `json:"usage,omitempty"`
 	ServiceTier       *string                    `json:"service_tier,omitempty"`
 	SystemFingerprint *string                    `json:"system_fingerprint,omitempty"`
+}
+
+// OpenAITextCompletionChoice represents a completion choice in the text completion response
+type OpenAITextCompletionChoice struct {
+	Text         string                         `json:"text"`                    // Generated completion text
+	Index        int                            `json:"index"`                   // Index of this choice
+	FinishReason *string                        `json:"finish_reason,omitempty"` // Reason completion finished
+	Logprobs     *schemas.TextCompletionLogProb `json:"logprobs,omitempty"`      // Log probability information
+}
+
+// OpenAITextCompletionResponse represents an OpenAI text completion response
+type OpenAITextCompletionResponse struct {
+	ID                string                       `json:"id"`                           // Unique identifier
+	Object            string                       `json:"object"`                       // Always "text_completion"
+	Created           int                          `json:"created"`                      // Unix timestamp
+	Model             string                       `json:"model"`                        // Model used
+	Choices           []OpenAITextCompletionChoice `json:"choices"`                      // Completion choices
+	Usage             *schemas.LLMUsage            `json:"usage,omitempty"`              // Token usage
+	SystemFingerprint *string                      `json:"system_fingerprint,omitempty"` // System fingerprint
 }
 
 // ERROR TYPES
@@ -155,4 +168,3 @@ type OpenAIChatErrorStruct struct {
 	Param   interface{} `json:"param"`    // Parameter that caused the error
 	EventID string      `json:"event_id"` // Event ID for tracking
 }
-
