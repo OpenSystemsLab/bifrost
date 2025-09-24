@@ -101,7 +101,7 @@ jobs:
       with:
         context: .
         file: ./transports/Dockerfile
-        platforms: linux/amd64,linux/arm64
+        platforms: linux/amd64
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
@@ -116,14 +116,18 @@ jobs:
         echo "**Image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
         echo "**Tags**: ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### FluxCD Integration:" >> $GITHUB_STEP_SUMMARY
+        echo "The \`sha-<hash>\` tag format is automatically detected by FluxCD image automation." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Usage in Kubernetes:" >> $GITHUB_STEP_SUMMARY
         echo '```yaml' >> $GITHUB_STEP_SUMMARY
-        echo "image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+        echo "image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-\$(git rev-parse --short HEAD)" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Features:" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ Go-based LLM Gateway with MCP support" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ Next.js UI included" >> $GITHUB_STEP_SUMMARY  
-        echo "- ✅ Multi-architecture support (amd64, arm64)" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ amd64 architecture for faster builds (~5-10 min vs 40+ min)" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ SHA-tagged images for FluxCD automation" >> $GITHUB_STEP_SUMMARY
         echo "- ✅ OpenTelemetry observability" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ Built with Go ${{ env.GO_VERSION }} and Node.js 24" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Built with Go 1.24 and Node.js 24" >> $GITHUB_STEP_SUMMARY
