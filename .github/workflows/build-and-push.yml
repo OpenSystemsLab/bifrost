@@ -3,6 +3,7 @@ name: Build and Push Bifrost Docker Image
 on:
   push:
     branches: [ main, develop ]
+    tags: [ 'v*.*.*' ]  # Trigger on semantic version tags
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -65,6 +66,8 @@ jobs:
           type=ref,event=pr
           type=raw,value=latest,enable={{is_default_branch}}
           type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
           type=sha,prefix=sha-,format=short
 
     - name: Cache Go modules
