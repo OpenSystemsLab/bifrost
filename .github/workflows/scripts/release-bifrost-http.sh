@@ -176,9 +176,39 @@ echo "📤 Uploading binaries..."
 bash ./.github/workflows/scripts/configure-r2.sh
 bash ./.github/workflows/scripts/upload-to-r2.sh "$TAG_NAME"
 
+# Capturing changelog
+CHANGELOG_BODY=$(cat transports/changelog.md)
+# Skip comments from changelog
+CHANGELOG_BODY=$(echo "$CHANGELOG_BODY" | grep -v '^<!--' | grep -v '^-->')
+# If changelog is empty, return error
+if [ -z "$CHANGELOG_BODY" ]; then
+  echo "❌ Changelog is empty"
+  exit 1
+fi
+echo "📝 New changelog: $CHANGELOG_BODY"
+
+# Finding previous tag
+echo "🔍 Finding previous tag..."
+PREV_TAG=$(git tag -l "transports/v*" | sort -V | tail -1)
+if [[ "$PREV_TAG" == "$TAG_NAME" ]]; then
+  PREV_TAG=$(git tag -l "transports/v*" | sort -V | tail -2 | head -1)
+fi
+echo "🔍 Previous tag: $PREV_TAG"
+
+# Get message of the tag
+echo "🔍 Getting previous tag message..."
+PREV_CHANGELOG=$(git tag -l --format='%(contents)' "$PREV_TAG")
+echo "📝 Previous changelog body: $PREV_CHANGELOG"
+
+# Checking if tag message is the same as the changelog
+if [[ "$PREV_CHANGELOG" == "$CHANGELOG_BODY" ]]; then
+  echo "❌ Changelog is the same as the previous changelog"
+  exit 1
+fi
+
 # Create and push tag
 echo "🏷️ Creating tag: $TAG_NAME"
-git tag "$TAG_NAME" -m "Release transports v$VERSION"
+git tag "$TAG_NAME" -m "Release transports v$VERSION" -m "$CHANGELOG_BODY"
 git push origin "$TAG_NAME"
 
 # Create GitHub release
@@ -225,14 +255,8 @@ fi
 
 BODY="## Bifrost HTTP Transport Release v$VERSION
 
-### 🚀 Bifrost HTTP Transport v$VERSION
+$CHANGELOG_BODY
 
-This release includes the complete Bifrost HTTP transport with all dependencies updated.
-
-### Dependencies
-- **Core**: \`$CORE_VERSION\`
-- **Framework**: \`$FRAMEWORK_VERSION\`
-$PLUGIN_UPDATES
 ### Installation
 
 #### Docker

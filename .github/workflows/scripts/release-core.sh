@@ -29,15 +29,47 @@ if [[ "$FILE_VERSION" != "$VERSION" ]]; then
   exit 1
 fi
 
+# Building core
 go mod download
 go build ./...
 go test ./...
 cd ..
 echo "✅ Core build validation successful"
 
+
+# Capturing changelog
+CHANGELOG_BODY=$(cat core/changelog.md)
+# Skip comments from changelog
+CHANGELOG_BODY=$(echo "$CHANGELOG_BODY" | grep -v '^<!--' | grep -v '^-->')
+# If changelog is empty, return error
+if [ -z "$CHANGELOG_BODY" ]; then
+  echo "❌ Changelog is empty"
+  exit 1
+fi
+echo "📝 New changelog: $CHANGELOG_BODY"
+
+# Finding previous tag
+echo "🔍 Finding previous tag..."
+PREV_TAG=$(git tag -l "core/v*" | sort -V | tail -1)
+if [[ "$PREV_TAG" == "$TAG_NAME" ]]; then
+  PREV_TAG=$(git tag -l "core/v*" | sort -V | tail -2 | head -1)
+fi
+echo "🔍 Previous tag: $PREV_TAG"
+
+# Get message of the tag
+echo "🔍 Getting previous tag message..."
+PREV_CHANGELOG=$(git tag -l --format='%(contents)' "$PREV_TAG")
+echo "📝 Previous changelog body: $PREV_CHANGELOG"
+
+# Checking if tag message is the same as the changelog
+if [[ "$PREV_CHANGELOG" == "$CHANGELOG_BODY" ]]; then
+  echo "❌ Changelog is the same as the previous changelog"
+  exit 1
+fi
+
 # Create and push tag
 echo "🏷️ Creating tag: $TAG_NAME"
-git tag "$TAG_NAME" -m "Release core v$VERSION"
+git tag "$TAG_NAME" -m "Release core v$VERSION" -m "$CHANGELOG_BODY"
 git push origin "$TAG_NAME"
 
 # Create GitHub release
@@ -56,20 +88,13 @@ fi
 
 BODY="## Core Release v$VERSION
 
-### 🔧 Core Library v$VERSION
-
-This release contains updates to the core Bifrost library.
+$CHANGELOG_BODY
 
 ### Installation
 
 \`\`\`bash
 go get github.com/maximhq/bifrost/core@v$VERSION
 \`\`\`
-
-### Next Steps
-1. Framework will be updated automatically if needed
-2. Plugins will be updated automatically if needed
-3. Bifrost HTTP will be updated automatically if needed
 
 ---
 _This release was automatically created from version file: \`core/version\`_"

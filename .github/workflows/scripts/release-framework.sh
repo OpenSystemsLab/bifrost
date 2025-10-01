@@ -95,12 +95,42 @@ else
   echo "No dependency changes detected; skipping commit."
 fi
 
+# Capturing changelog
+CHANGELOG_BODY=$(cat framework/changelog.md)
+# Skip comments from changelog
+CHANGELOG_BODY=$(echo "$CHANGELOG_BODY" | grep -v '^<!--' | grep -v '^-->')
+# If changelog is empty, return error
+if [ -z "$CHANGELOG_BODY" ]; then
+  echo "❌ Changelog is empty"
+  exit 1
+fi
+echo "📝 New changelog: $CHANGELOG_BODY"
+
+# Finding previous tag
+echo "🔍 Finding previous tag..."
+PREV_TAG=$(git tag -l "framework/v*" | sort -V | tail -1)
+if [[ "$PREV_TAG" == "$TAG_NAME" ]]; then
+  PREV_TAG=$(git tag -l "framework/v*" | sort -V | tail -2 | head -1)
+fi
+echo "🔍 Previous tag: $PREV_TAG"
+
+# Get message of the tag  
+echo "🔍 Getting previous tag message..."
+PREV_CHANGELOG=$(git tag -l --format='%(contents)' "$PREV_TAG")
+echo "📝 Previous changelog body: $PREV_CHANGELOG"
+
+# Checking if tag message is the same as the changelog
+if [[ "$PREV_CHANGELOG" == "$CHANGELOG_BODY" ]]; then
+  echo "❌ Changelog is the same as the previous changelog"
+  exit 1
+fi
+
 # Create and push tag
 echo "🏷️ Creating tag: $TAG_NAME"
 if git rev-parse --verify "$TAG_NAME" >/dev/null 2>&1; then
   echo "Tag $TAG_NAME already exists; skipping tag creation."
 else
-  git tag "$TAG_NAME" -m "Release framework $VERSION"
+  git tag "$TAG_NAME" -m "Release framework $VERSION" -m "$CHANGELOG_BODY"
   git push origin "$TAG_NAME"
 fi
 
@@ -120,12 +150,7 @@ fi
 
 BODY="## Framework Release $VERSION
 
-### 📦 Framework Library $VERSION
-
-This release updates the framework to use **core $CORE_VERSION**.
-
-### Dependencies
-- **Core**: \`$CORE_VERSION\`
+$CHANGELOG_BODY
 
 ### Installation
 
