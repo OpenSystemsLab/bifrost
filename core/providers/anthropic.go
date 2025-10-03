@@ -4,6 +4,7 @@ package providers
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -69,7 +70,7 @@ type AnthropicStreamEvent struct {
 	Index        *int                    `json:"index,omitempty"`
 	ContentBlock *AnthropicContentBlock  `json:"content_block,omitempty"`
 	Delta        *AnthropicDelta         `json:"delta,omitempty"`
-	Usage        *schemas.LLMUsage       `json:"usage,omitempty"`
+	Usage        *AnthropicUsage         `json:"usage,omitempty"`
 	Error        *AnthropicStreamError   `json:"error,omitempty"`
 }
 
@@ -121,6 +122,14 @@ type AnthropicDelta struct {
 	StopSequence *string `json:"stop_sequence,omitempty"`
 }
 
+// AnthropicUsage represents the usage information for Anthropic's API.
+type AnthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+}
+
 // AnthropicStreamError represents error events in the streaming response.
 type AnthropicStreamError struct {
 	Type    string `json:"type"`
@@ -145,12 +154,13 @@ type AnthropicImageContent struct {
 
 // AnthropicProvider implements the Provider interface for Anthropic's Claude API.
 type AnthropicProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
-	streamClient        *http.Client          // HTTP client for streaming requests
-	apiVersion          string                // API version for the provider
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger               schemas.Logger                // Logger for provider operations
+	client               *fasthttp.Client              // HTTP client for API requests
+	streamClient         *http.Client                  // HTTP client for streaming requests
+	apiVersion           string                        // API version for the provider
+	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
+	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 }
 
 // anthropicChatResponsePool provides a pool for Anthropic chat response objects.
@@ -195,6 +205,28 @@ func releaseAnthropicTextResponse(resp *AnthropicTextResponse) {
 	}
 }
 
+// Since Anthropic always needs to have a max_tokens parameter, we set a default value if not provided.
+const (
+	AnthropicDefaultMaxTokens = 4096
+)
+
+// mapAnthropicFinishReasonToOpenAI maps Anthropic finish reasons to OpenAI-compatible ones
+func MapAnthropicFinishReason(anthropicReason string) string {
+	switch anthropicReason {
+	case "end_turn":
+		return "stop"
+	case "max_tokens":
+		return "length"
+	case "stop_sequence":
+		return "stop"
+	case "tool_use":
+		return "tool_calls"
+	default:
+		// Pass through Anthropic-specific reasons like "pause_turn", "refusal", etc.
+		return anthropicReason
+	}
+}
+
 // NewAnthropicProvider creates a new Anthropic provider instance.
 // It initializes the HTTP client with the provided configuration and sets up response pools.
 // The client is configured with timeouts, concurrency limits, and optional proxy settings.
@@ -213,10 +245,9 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	}
 
 	// Pre-warm response pools
-	for range config.ConcurrencyAndBufferSize.Concurrency {
+	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
 		anthropicTextResponsePool.Put(&AnthropicTextResponse{})
 		anthropicChatResponsePool.Put(&AnthropicChatResponse{})
-
 	}
 
 	// Configure proxy if provided
@@ -229,33 +260,37 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &AnthropicProvider{
-		logger:              logger,
-		client:              client,
-		streamClient:        streamClient,
-		apiVersion:          "2023-06-01",
-		networkConfig:       config.NetworkConfig,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:               logger,
+		client:               client,
+		streamClient:         streamClient,
+		apiVersion:           "2023-06-01",
+		networkConfig:        config.NetworkConfig,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		customProviderConfig: config.CustomProviderConfig,
 	}
 }
 
 // GetProviderKey returns the provider identifier for Anthropic.
 func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Anthropic
+	return getProviderName(schemas.Anthropic, provider.customProviderConfig)
 }
 
 // prepareTextCompletionParams prepares text completion parameters for Anthropic's API.
 // It handles parameter mapping and conversion to the format expected by Anthropic.
 // Returns the modified parameters map.
 func (provider *AnthropicProvider) prepareTextCompletionParams(params map[string]interface{}) map[string]interface{} {
-	// Check if there is a key entry for max_tokens
-	if maxTokens, exists := params["max_tokens"]; exists {
-		// Check if max_tokens_to_sample is already present
-		if _, exists := params["max_tokens_to_sample"]; !exists {
-			// If max_tokens_to_sample is not present, rename max_tokens to max_tokens_to_sample
+	maxTokens, maxTokensExists := params["max_tokens"]
+	if _, exists := params["max_tokens_to_sample"]; !exists {
+		// If max_tokens_to_sample is not present, rename max_tokens to max_tokens_to_sample
+		if maxTokensExists {
 			params["max_tokens_to_sample"] = maxTokens
+		} else {
+			params["max_tokens_to_sample"] = AnthropicDefaultMaxTokens
 		}
-		delete(params, "max_tokens")
 	}
+
+	delete(params, "max_tokens")
+
 	return params
 }
 
@@ -266,7 +301,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 	// Marshal the request body
 	jsonData, err := sonic.Marshal(requestBody)
 	if err != nil {
-		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, schemas.Anthropic)
+		return nil, newBifrostOperationError(schemas.ErrProviderJSONMarshaling, err, provider.GetProviderKey())
 	}
 
 	// Create the request with the JSON body
@@ -294,7 +329,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from anthropic provider: %s", string(resp.Body())))
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
 
 		var errorResp AnthropicError
 
@@ -315,6 +350,10 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, requestB
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model string, key schemas.Key, text string, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationTextCompletion); err != nil {
+		return nil, err
+	}
+
 	preparedParams := provider.prepareTextCompletionParams(prepareParams(params))
 
 	// Merge additional parameters
@@ -360,7 +399,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model str
 		},
 		Model: response.Model,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.Anthropic,
+			Provider: provider.GetProviderKey(),
 		},
 	}
 
@@ -380,6 +419,10 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, model str
 // It formats the request, sends it to Anthropic, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationChatCompletion); err != nil {
+		return nil, err
+	}
+
 	formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
 
 	// Merge additional parameters
@@ -410,7 +453,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, model str
 	}
 
 	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-		Provider: schemas.Anthropic,
+		Provider: provider.GetProviderKey(),
 	}
 
 	// Set raw response if enabled
@@ -590,6 +633,11 @@ func prepareAnthropicChatRequest(messages []schemas.BifrostMessage, params *sche
 
 	preparedParams := prepareParams(params)
 
+	// If max_tokens is not provided, set a default value
+	if _, exists := preparedParams["max_tokens"]; !exists {
+		preparedParams["max_tokens"] = AnthropicDefaultMaxTokens
+	}
+
 	// Transform tools if present
 	if params != nil && params.Tools != nil && len(*params.Tools) > 0 {
 		var tools []map[string]interface{}
@@ -729,7 +777,7 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 			}
 
 			toolCalls = append(toolCalls, schemas.ToolCall{
-				Type:     StrPtr("function"),
+				Type:     Ptr("function"),
 				ID:       &c.ID,
 				Function: function,
 			})
@@ -765,7 +813,13 @@ func parseAnthropicResponse(response *AnthropicChatResponse, bifrostResponse *sc
 				},
 				StopString: response.StopSequence,
 			},
-			FinishReason: &response.StopReason,
+			FinishReason: func() *string {
+				if response.StopReason != "" {
+					mapped := MapAnthropicFinishReason(response.StopReason)
+					return &mapped
+				}
+				return nil
+			}(),
 		},
 	}
 	bifrostResponse.Usage = &schemas.LLMUsage{
@@ -787,6 +841,10 @@ func (provider *AnthropicProvider) Embedding(ctx context.Context, model string, 
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, model string, key schemas.Key, messages []schemas.BifrostMessage, params *schemas.ModelParameters) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if err := checkOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.OperationChatCompletionStream); err != nil {
+		return nil, err
+	}
+
 	formattedMessages, preparedParams := prepareAnthropicChatRequest(messages, params)
 
 	// Merge additional parameters and set stream to true
@@ -813,7 +871,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 		requestBody,
 		headers,
 		provider.networkConfig.ExtraHeaders,
-		schemas.Anthropic,
+		provider.GetProviderKey(),
 		params,
 		postHookRunner,
 		provider.logger,
@@ -841,9 +899,9 @@ func handleAnthropicStreaming(
 	}
 
 	// Create HTTP request for streaming
-	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(jsonBody)))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
-		return nil, newBifrostOperationError("failed to create HTTP request", err, providerType)
+		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerType)
 	}
 
 	// Set headers
@@ -881,6 +939,8 @@ func handleAnthropicStreaming(
 		// Track minimal state needed for response format
 		var messageID string
 		var modelName string
+		var usage *schemas.LLMUsage
+		var finishReason *string
 
 		// Track SSE event parsing state
 		var eventType string
@@ -909,29 +969,66 @@ func handleAnthropicStreaming(
 				continue
 			}
 
-			chunkIndex++
+			var event AnthropicStreamEvent
+			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
+				logger.Warn(fmt.Sprintf("Failed to parse message_start event: %v", err))
+				continue
+			}
+
+			if event.Usage != nil {
+				usage = &schemas.LLMUsage{
+					PromptTokens:     event.Usage.InputTokens,
+					CompletionTokens: event.Usage.OutputTokens,
+					TotalTokens:      event.Usage.InputTokens + event.Usage.OutputTokens,
+				}
+			}
+			if event.Delta != nil && event.Delta.StopReason != nil {
+				mappedReason := MapAnthropicFinishReason(*event.Delta.StopReason)
+				finishReason = &mappedReason
+			}
 
 			// Handle different event types
 			switch eventType {
 			case "message_start":
-				var event AnthropicStreamEvent
-				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-					logger.Warn(fmt.Sprintf("Failed to parse message_start event: %v", err))
-					continue
-				}
 				if event.Message != nil {
 					messageID = event.Message.ID
 					modelName = event.Message.Model
+
+					// Send first chunk with role
+					if event.Message.Role != "" {
+						chunkIndex++
+						role := event.Message.Role
+
+						// Create streaming response for message start with role
+						streamResponse := &schemas.BifrostResponse{
+							ID:     messageID,
+							Object: "chat.completion.chunk",
+							Model:  modelName,
+							Choices: []schemas.BifrostResponseChoice{
+								{
+									Index: 0,
+									BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+										Delta: schemas.BifrostStreamDelta{
+											Role: &role,
+										},
+									},
+								},
+							},
+							ExtraFields: schemas.BifrostResponseExtraFields{
+								Provider:   providerType,
+								ChunkIndex: chunkIndex,
+							},
+						}
+
+						// Use utility function to process and send response
+						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
+					}
 				}
 
 			case "content_block_start":
-				var event AnthropicStreamEvent
-				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-					logger.Warn(fmt.Sprintf("Failed to parse content_block_start event: %v", err))
-					continue
-				}
-
 				if event.Index != nil && event.ContentBlock != nil {
+					chunkIndex++
+
 					// Handle different content block types
 					switch event.ContentBlock.Type {
 					case "tool_use":
@@ -964,10 +1061,6 @@ func handleAnthropicStreaming(
 									Provider:   providerType,
 									ChunkIndex: chunkIndex,
 								},
-							}
-
-							if params != nil {
-								streamResponse.ExtraFields.Params = *params
 							}
 
 							// Use utility function to process and send response
@@ -1005,23 +1098,15 @@ func handleAnthropicStreaming(
 							},
 						}
 
-						if params != nil {
-							streamResponse.ExtraFields.Params = *params
-						}
-
 						// Use utility function to process and send response
 						processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
 					}
 				}
 
 			case "content_block_delta":
-				var event AnthropicStreamEvent
-				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-					logger.Warn(fmt.Sprintf("Failed to parse content_block_delta event: %v", err))
-					continue
-				}
-
 				if event.Index != nil && event.Delta != nil {
+					chunkIndex++
+
 					// Handle different delta types
 					switch event.Delta.Type {
 					case "text_delta":
@@ -1045,10 +1130,6 @@ func handleAnthropicStreaming(
 									Provider:   providerType,
 									ChunkIndex: chunkIndex,
 								},
-							}
-
-							if params != nil {
-								streamResponse.ExtraFields.Params = *params
 							}
 
 							// Use utility function to process and send response
@@ -1086,10 +1167,6 @@ func handleAnthropicStreaming(
 								},
 							}
 
-							if params != nil {
-								streamResponse.ExtraFields.Params = *params
-							}
-
 							// Use utility function to process and send response
 							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
 						}
@@ -1118,10 +1195,6 @@ func handleAnthropicStreaming(
 								},
 							}
 
-							if params != nil {
-								streamResponse.ExtraFields.Params = *params
-							}
-
 							// Use utility function to process and send response
 							processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
 						}
@@ -1138,97 +1211,19 @@ func handleAnthropicStreaming(
 				continue
 
 			case "message_delta":
-				var event AnthropicStreamEvent
-				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-					logger.Warn(fmt.Sprintf("Failed to parse message_delta event: %v", err))
-					continue
-				}
-
-				// Handle delta changes to the top-level message
-
-				// Send usage information immediately if present
-				if event.Usage != nil {
-					streamResponse := &schemas.BifrostResponse{
-						ID:     messageID,
-						Object: "chat.completion.chunk",
-						Model:  modelName,
-						Usage:  event.Usage,
-						Choices: []schemas.BifrostResponseChoice{
-							{
-								Index: 0,
-								BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-									Delta: schemas.BifrostStreamDelta{}, // Empty delta for usage update
-								},
-								FinishReason: event.Delta.StopReason,
-							},
-						},
-						ExtraFields: schemas.BifrostResponseExtraFields{
-							Provider:   providerType,
-							ChunkIndex: chunkIndex,
-						},
-					}
-
-					if params != nil {
-						streamResponse.ExtraFields.Params = *params
-					}
-
-					// Use utility function to process and send response
-					processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
-				}
+				continue
 
 			case "message_stop":
-				var event AnthropicStreamEvent
-				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-					logger.Warn(fmt.Sprintf("Failed to parse message_stop event: %v", err))
-					continue
-				}
-
-				stopReason := ""
-				if event.Delta != nil {
-					stopReason = *event.Delta.StopReason
-				}
-
-				// Send final message with stop reason
-				streamResponse := &schemas.BifrostResponse{
-					ID:     messageID,
-					Object: "chat.completion.chunk",
-					Model:  modelName,
-					Choices: []schemas.BifrostResponseChoice{
-						{
-							Index:        0,
-							FinishReason: &stopReason,
-							BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
-								Delta: schemas.BifrostStreamDelta{}, // Empty delta for final message
-							},
-						},
-					},
-					ExtraFields: schemas.BifrostResponseExtraFields{
-						Provider:   providerType,
-						ChunkIndex: chunkIndex,
-					},
-				}
-
-				if params != nil {
-					streamResponse.ExtraFields.Params = *params
-				}
-
-				// Use utility function to process and send response
-				processAndSendResponse(ctx, postHookRunner, streamResponse, responseChan, logger)
-				return
+				continue
 
 			case "ping":
 				// Ping events are just keepalive, no action needed
 				continue
 
 			case "error":
-				var event AnthropicStreamEvent
-				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-					logger.Warn(fmt.Sprintf("Failed to parse error event: %v", err))
-					continue
-				}
 				if event.Error != nil {
 					// Send error through channel before closing
-					bifrostError := &schemas.BifrostError{
+					bifrostErr := &schemas.BifrostError{
 						IsBifrostError: false,
 						Error: schemas.ErrorField{
 							Type:    &event.Error.Type,
@@ -1236,16 +1231,8 @@ func handleAnthropicStreaming(
 						},
 					}
 
-					processedResponse, processedError := postHookRunner(&ctx, nil, bifrostError)
-					bifrostError = processedError
-
-					select {
-					case responseChan <- &schemas.BifrostStream{
-						BifrostResponse: processedResponse,
-						BifrostError:    bifrostError,
-					}:
-					case <-ctx.Done():
-					}
+					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+					processAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
 				}
 				return
 
@@ -1264,6 +1251,9 @@ func handleAnthropicStreaming(
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerType, err))
 			processAndSendError(ctx, postHookRunner, err, responseChan, logger)
+		} else {
+			response := createBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, params, providerType)
+			handleStreamEndWithSuccess(ctx, response, postHookRunner, responseChan, logger)
 		}
 	}()
 

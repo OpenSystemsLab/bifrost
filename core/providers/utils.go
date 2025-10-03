@@ -3,6 +3,7 @@
 package providers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -148,7 +149,7 @@ func makeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 		return &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: schemas.ErrorField{
-				Type:    StrPtr(schemas.RequestCancelled),
+				Type:    Ptr(schemas.RequestCancelled),
 				Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 				Error:   ctx.Err(),
 			},
@@ -377,16 +378,10 @@ func getRoleFromMessage(msg map[string]interface{}) (schemas.ModelChatMessageRol
 	return "", false // Role is of an unexpected or invalid type
 }
 
-// float64Ptr creates a pointer to a float64 value.
-// This is a helper function for creating pointers to float64 values.
-func float64Ptr(f float64) *float64 {
-	return &f
-}
-
-// StrPtr creates a pointer to a string value.
-// This is a helper function for creating pointers to string values.
-func StrPtr(s string) *string {
-	return &s
+// Ptr creates a pointer to any value.
+// This is a helper function for creating pointers to values.
+func Ptr[T any](v T) *T {
+	return &v
 }
 
 //* IMAGE UTILS *//
@@ -549,15 +544,91 @@ func isLikelyBase64(s string) bool {
 	return base64Regex.MatchString(cleanData)
 }
 
+var (
+	riff = []byte("RIFF")
+	wave = []byte("WAVE")
+	id3  = []byte("ID3")
+	form = []byte("FORM")
+	aiff = []byte("AIFF")
+	aifc = []byte("AIFC")
+	flac = []byte("fLaC")
+	oggs = []byte("OggS")
+	adif = []byte("ADIF")
+)
+
+// detectAudioMimeType attempts to detect the MIME type from audio file headers
+// Gemini supports: WAV, MP3, AIFF, AAC, OGG Vorbis, FLAC
+func detectAudioMimeType(audioData []byte) string {
+	if len(audioData) < 4 {
+		return "audio/mp3"
+	}
+	// WAV (RIFF/WAVE)
+	if len(audioData) >= 12 &&
+		bytes.Equal(audioData[:4], riff) &&
+		bytes.Equal(audioData[8:12], wave) {
+		return "audio/wav"
+	}
+	// MP3: ID3v2 tag (keep this check for MP3)
+	if len(audioData) >= 3 && bytes.Equal(audioData[:3], id3) {
+		return "audio/mp3"
+	}
+	// AAC: ADIF or ADTS (0xFFF sync) - check before MP3 frame sync to avoid misclassification
+	if bytes.HasPrefix(audioData, adif) {
+		return "audio/aac"
+	}
+	if len(audioData) >= 2 && audioData[0] == 0xFF && (audioData[1]&0xF6) == 0xF0 {
+		return "audio/aac"
+	}
+	// AIFF / AIFC (map both to audio/aiff)
+	if len(audioData) >= 12 && bytes.Equal(audioData[:4], form) &&
+		(bytes.Equal(audioData[8:12], aiff) || bytes.Equal(audioData[8:12], aifc)) {
+		return "audio/aiff"
+	}
+	// FLAC
+	if bytes.HasPrefix(audioData, flac) {
+		return "audio/flac"
+	}
+	// OGG container
+	if bytes.HasPrefix(audioData, oggs) {
+		return "audio/ogg"
+	}
+	// MP3: MPEG frame sync (cover common variants) - check after AAC to avoid misclassification
+	if len(audioData) >= 2 && audioData[0] == 0xFF &&
+		(audioData[1] == 0xFB || audioData[1] == 0xF3 || audioData[1] == 0xF2 || audioData[1] == 0xFA) {
+		return "audio/mp3"
+	}
+	// Fallback within supported set
+	return "audio/mp3"
+}
+
 // newUnsupportedOperationError creates a standardized error for unsupported operations.
 // This helper reduces code duplication across providers that don't support certain operations.
 func newUnsupportedOperationError(operation string, providerName string) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		IsBifrostError: false,
+		Provider:       schemas.ModelProvider(providerName),
 		Error: schemas.ErrorField{
 			Message: fmt.Sprintf("%s is not supported by %s provider", operation, providerName),
 		},
 	}
+}
+
+// checkOperationAllowed enforces per-op gating using schemas.Operation.
+// Behavior:
+// - If no gating is configured (config == nil or AllowedRequests == nil), the operation is allowed.
+// - If gating is configured, returns an error when the operation is not explicitly allowed.
+func checkOperationAllowed(defaultProvider schemas.ModelProvider, config *schemas.CustomProviderConfig, operation schemas.Operation) *schemas.BifrostError {
+	// No gating configured => allowed
+	if config == nil || config.AllowedRequests == nil {
+		return nil
+	}
+	// Explicitly allowed?
+	if config.IsOperationAllowed(operation) {
+		return nil
+	}
+	// Gated and not allowed
+	resolved := getProviderName(defaultProvider, config)
+	return newUnsupportedOperationError(string(operation), string(resolved))
 }
 
 // newConfigurationError creates a standardized error for configuration errors.
@@ -600,29 +671,6 @@ func newProviderAPIError(message string, err error, statusCode int, providerType
 			Type:    errorType,
 		},
 	}
-}
-
-// approximateTokenCount provides a rough approximation of token count for text.
-// WARNING: This is a best-effort approximation using 1 token per 4 characters.
-// This heuristic is particularly inaccurate for:
-// - Non-ASCII text (multi-byte characters)
-// - Short texts
-// - Different languages and tokenization methods
-// - Various model-specific tokenizers
-//
-// The actual token count may vary significantly based on tokenization method,
-// language, and text structure. Consider omitting token metrics when precise
-// counts are unavailable to avoid misleading usage information.
-//
-// For precise token usage tracking, implement a proper tokenizer that matches
-// the model's tokenization method.
-func approximateTokenCount(texts []string) int {
-	totalInputTokens := 0
-	for _, text := range texts {
-		// Rough approximation: 1 token per 4 characters
-		totalInputTokens += len(text) / 4
-	}
-	return totalInputTokens
 }
 
 // processAndSendResponse handles post-hook processing and sends the response to the channel.
@@ -668,6 +716,34 @@ func processAndSendResponse(
 	}
 }
 
+// processAndSendBifrostError handles post-hook processing and sends the bifrost error to the channel.
+// This utility reduces code duplication across streaming implementations by encapsulating
+// the common pattern of running post hooks, handling errors, and sending responses with
+// proper context cancellation handling.
+func processAndSendBifrostError(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	bifrostErr *schemas.BifrostError,
+	responseChan chan *schemas.BifrostStream,
+	logger schemas.Logger,
+) {
+	// Send scanner error through channel
+	processedResponse, processedError := postHookRunner(&ctx, nil, bifrostErr)
+
+	if handleStreamControlSkip(logger, processedError) {
+		return
+	}
+
+	errorResponse := &schemas.BifrostStream{
+		BifrostResponse: processedResponse,
+		BifrostError:    processedError,
+	}
+	select {
+	case responseChan <- errorResponse:
+	case <-ctx.Done():
+	}
+}
+
 // processAndSendError handles post-hook processing and sends the error to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
@@ -704,6 +780,48 @@ func processAndSendError(
 	}
 }
 
+func createBifrostChatCompletionChunkResponse(
+	id string,
+	usage *schemas.LLMUsage,
+	finishReason *string,
+	currentChunkIndex int,
+	params *schemas.ModelParameters,
+	providerName schemas.ModelProvider,
+) *schemas.BifrostResponse {
+	response := &schemas.BifrostResponse{
+		ID:     id,
+		Object: "chat.completion.chunk",
+		Usage:  usage,
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				FinishReason: finishReason,
+				BifrostStreamResponseChoice: &schemas.BifrostStreamResponseChoice{
+					Delta: schemas.BifrostStreamDelta{}, // empty delta
+				},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:   providerName,
+			ChunkIndex: currentChunkIndex + 1,
+		},
+	}
+	if params != nil {
+		response.ExtraFields.Params = *params
+	}
+	return response
+}
+
+func handleStreamEndWithSuccess(
+	ctx context.Context,
+	response *schemas.BifrostResponse,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStream,
+	logger schemas.Logger,
+) {
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+	processAndSendResponse(ctx, postHookRunner, response, responseChan, logger)
+}
+
 func handleStreamControlSkip(logger schemas.Logger, bifrostErr *schemas.BifrostError) bool {
 	if bifrostErr == nil || bifrostErr.StreamControl == nil {
 		return false
@@ -715,4 +833,16 @@ func handleStreamControlSkip(logger schemas.Logger, bifrostErr *schemas.BifrostE
 		return true
 	}
 	return false
+}
+
+// getProviderName extracts the provider name from custom provider configuration.
+// If a custom provider key is specified, it returns that; otherwise, it returns the default provider.
+// Note: CustomProviderKey is internally set by Bifrost and should always match the provider name.
+func getProviderName(defaultProvider schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) schemas.ModelProvider {
+	if customConfig != nil {
+		if key := strings.TrimSpace(customConfig.CustomProviderKey); key != "" {
+			return schemas.ModelProvider(key)
+		}
+	}
+	return defaultProvider
 }

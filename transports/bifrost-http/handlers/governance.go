@@ -10,7 +10,8 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/governance"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -19,18 +20,22 @@ import (
 type GovernanceHandler struct {
 	plugin      *governance.GovernancePlugin
 	pluginStore *governance.GovernanceStore
-	db          *gorm.DB
+	configStore configstore.ConfigStore
 	logger      schemas.Logger
 }
 
 // NewGovernanceHandler creates a new governance handler instance
-func NewGovernanceHandler(plugin *governance.GovernancePlugin, db *gorm.DB, logger schemas.Logger) *GovernanceHandler {
+func NewGovernanceHandler(plugin *governance.GovernancePlugin, configStore configstore.ConfigStore, logger schemas.Logger) (*GovernanceHandler, error) {
+	if configStore == nil {
+		return nil, fmt.Errorf("config store is required")
+	}
+
 	return &GovernanceHandler{
 		plugin:      plugin,
 		pluginStore: plugin.GetGovernanceStore(),
-		db:          db,
+		configStore: configStore,
 		logger:      logger,
-	}
+	}, nil
 }
 
 // CreateVirtualKeyRequest represents the request body for creating a virtual key
@@ -43,6 +48,7 @@ type CreateVirtualKeyRequest struct {
 	CustomerID       *string                 `json:"customer_id,omitempty"`       // Mutually exclusive with TeamID
 	Budget           *CreateBudgetRequest    `json:"budget,omitempty"`
 	RateLimit        *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	KeyIDs           []string                `json:"key_ids,omitempty"` // List of DBKey UUIDs to associate with this VirtualKey
 	IsActive         *bool                   `json:"is_active,omitempty"`
 }
 
@@ -55,6 +61,7 @@ type UpdateVirtualKeyRequest struct {
 	CustomerID       *string                 `json:"customer_id,omitempty"`
 	Budget           *UpdateBudgetRequest    `json:"budget,omitempty"`
 	RateLimit        *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	KeyIDs           *[]string               `json:"key_ids,omitempty"` // List of DBKey UUIDs to associate with this VirtualKey
 	IsActive         *bool                   `json:"is_active,omitempty"`
 }
 
@@ -115,35 +122,35 @@ type UpdateCustomerRequest struct {
 // RegisterRoutes registers all governance-related routes for the new hierarchical system
 func (h *GovernanceHandler) RegisterRoutes(r *router.Router) {
 	// Virtual Key CRUD operations
-	r.GET("/api/governance/virtual-keys", h.GetVirtualKeys)
-	r.POST("/api/governance/virtual-keys", h.CreateVirtualKey)
-	r.GET("/api/governance/virtual-keys/{vk_id}", h.GetVirtualKey)
-	r.PUT("/api/governance/virtual-keys/{vk_id}", h.UpdateVirtualKey)
-	r.DELETE("/api/governance/virtual-keys/{vk_id}", h.DeleteVirtualKey)
+	r.GET("/api/governance/virtual-keys", h.getVirtualKeys)
+	r.POST("/api/governance/virtual-keys", h.createVirtualKey)
+	r.GET("/api/governance/virtual-keys/{vk_id}", h.getVirtualKey)
+	r.PUT("/api/governance/virtual-keys/{vk_id}", h.updateVirtualKey)
+	r.DELETE("/api/governance/virtual-keys/{vk_id}", h.deleteVirtualKey)
 
 	// Team CRUD operations
-	r.GET("/api/governance/teams", h.GetTeams)
-	r.POST("/api/governance/teams", h.CreateTeam)
-	r.GET("/api/governance/teams/{team_id}", h.GetTeam)
-	r.PUT("/api/governance/teams/{team_id}", h.UpdateTeam)
-	r.DELETE("/api/governance/teams/{team_id}", h.DeleteTeam)
+	r.GET("/api/governance/teams", h.getTeams)
+	r.POST("/api/governance/teams", h.createTeam)
+	r.GET("/api/governance/teams/{team_id}", h.getTeam)
+	r.PUT("/api/governance/teams/{team_id}", h.updateTeam)
+	r.DELETE("/api/governance/teams/{team_id}", h.deleteTeam)
 
 	// Customer CRUD operations
-	r.GET("/api/governance/customers", h.GetCustomers)
-	r.POST("/api/governance/customers", h.CreateCustomer)
-	r.GET("/api/governance/customers/{customer_id}", h.GetCustomer)
-	r.PUT("/api/governance/customers/{customer_id}", h.UpdateCustomer)
-	r.DELETE("/api/governance/customers/{customer_id}", h.DeleteCustomer)
+	r.GET("/api/governance/customers", h.getCustomers)
+	r.POST("/api/governance/customers", h.createCustomer)
+	r.GET("/api/governance/customers/{customer_id}", h.getCustomer)
+	r.PUT("/api/governance/customers/{customer_id}", h.updateCustomer)
+	r.DELETE("/api/governance/customers/{customer_id}", h.deleteCustomer)
 }
 
 // Virtual Key CRUD Operations
 
-// GetVirtualKeys handles GET /api/governance/virtual-keys - Get all virtual keys with relationships
-func (h *GovernanceHandler) GetVirtualKeys(ctx *fasthttp.RequestCtx) {
-	var virtualKeys []governance.VirtualKey
-
+// getVirtualKeys handles GET /api/governance/virtual-keys - Get all virtual keys with relationships
+func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	// Preload all relationships for complete information
-	if err := h.db.Preload("Team").Preload("Customer").Preload("Budget").Preload("RateLimit").Find(&virtualKeys).Error; err != nil {
+	virtualKeys, err := h.configStore.GetVirtualKeys()
+	if err != nil {
+		h.logger.Error("failed to retrieve virtual keys: %v", err)
 		SendError(ctx, 500, "Failed to retrieve virtual keys", h.logger)
 		return
 	}
@@ -154,8 +161,8 @@ func (h *GovernanceHandler) GetVirtualKeys(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// CreateVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
-func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
+// createVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
+func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var req CreateVirtualKeyRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON", h.logger)
@@ -181,7 +188,7 @@ func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Validate reset duration format
-		if _, err := governance.ParseDuration(req.Budget.ResetDuration); err != nil {
+		if _, err := configstore.ParseDuration(req.Budget.ResetDuration); err != nil {
 			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", req.Budget.ResetDuration), h.logger)
 			return
 		}
@@ -193,9 +200,22 @@ func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
 		isActive = *req.IsActive
 	}
 
-	var vk governance.VirtualKey
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
-		vk = governance.VirtualKey{
+	var vk configstore.TableVirtualKey
+	if err := h.configStore.ExecuteTransaction(func(tx *gorm.DB) error {
+		// Get the keys if DBKeyIDs are provided
+		var keys []configstore.TableKey
+		if len(req.KeyIDs) > 0 {
+			var err error
+			keys, err = h.configStore.GetKeysByIDs(req.KeyIDs)
+			if err != nil {
+				return fmt.Errorf("failed to get keys by IDs: %w", err)
+			}
+			if len(keys) != len(req.KeyIDs) {
+				return fmt.Errorf("some keys not found: expected %d, found %d", len(req.KeyIDs), len(keys))
+			}
+		}
+
+		vk = configstore.TableVirtualKey{
 			ID:               uuid.NewString(),
 			Name:             req.Name,
 			Value:            uuid.NewString(),
@@ -205,24 +225,25 @@ func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
 			TeamID:           req.TeamID,
 			CustomerID:       req.CustomerID,
 			IsActive:         isActive,
+			Keys:             keys, // Set the keys for the many-to-many relationship
 		}
 
 		if req.Budget != nil {
-			budget := governance.Budget{
+			budget := configstore.TableBudget{
 				ID:            uuid.NewString(),
 				MaxLimit:      req.Budget.MaxLimit,
 				ResetDuration: req.Budget.ResetDuration,
 				LastReset:     time.Now(),
 				CurrentUsage:  0,
 			}
-			if err := tx.Create(&budget).Error; err != nil {
+			if err := h.configStore.CreateBudget(&budget, tx); err != nil {
 				return err
 			}
 			vk.BudgetID = &budget.ID
 		}
 
 		if req.RateLimit != nil {
-			rateLimit := governance.RateLimit{
+			rateLimit := configstore.TableRateLimit{
 				ID:                   uuid.NewString(),
 				TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
 				TokenResetDuration:   req.RateLimit.TokenResetDuration,
@@ -231,48 +252,50 @@ func (h *GovernanceHandler) CreateVirtualKey(ctx *fasthttp.RequestCtx) {
 				TokenLastReset:       time.Now(),
 				RequestLastReset:     time.Now(),
 			}
-			if err := tx.Create(&rateLimit).Error; err != nil {
+			if err := h.configStore.CreateRateLimit(&rateLimit, tx); err != nil {
 				return err
 			}
 			vk.RateLimitID = &rateLimit.ID
 		}
 
-		if err := tx.Create(&vk).Error; err != nil {
-			SendError(ctx, 500, "Failed to create virtual key", h.logger)
+		if err := h.configStore.CreateVirtualKey(&vk, tx); err != nil {
 			return err
 		}
 
 		return nil
 	}); err != nil {
-		SendError(ctx, 500, "Failed to create virtual key", h.logger)
+		SendError(ctx, 500, err.Error(), h.logger)
 		return
 	}
 
 	// Load relationships for response
-	if err := h.db.Preload("Team").Preload("Customer").Preload("Budget").Preload("RateLimit").First(&vk, "id = ?", vk.ID).Error; err != nil {
-		h.logger.Error(fmt.Errorf("failed to load relationships for created VK: %w", err))
+	preloadedVk, err := h.configStore.GetVirtualKey(vk.ID)
+	if err != nil {
+		h.logger.Error("failed to load relationships for created VK: %v", err)
+		// If we can't load the full VK, use the basic one we just created
+		preloadedVk = &vk
 	}
 
 	// Add to in-memory store
-	h.pluginStore.CreateVirtualKeyInMemory(&vk)
+	h.pluginStore.CreateVirtualKeyInMemory(preloadedVk)
 
 	// If budget was created, add it to in-memory store
-	if vk.BudgetID != nil {
-		h.pluginStore.CreateBudgetInMemory(vk.Budget)
+	if vk.BudgetID != nil && preloadedVk.Budget != nil {
+		h.pluginStore.CreateBudgetInMemory(preloadedVk.Budget)
 	}
 
 	SendJSON(ctx, map[string]interface{}{
 		"message":     "Virtual key created successfully",
-		"virtual_key": vk,
+		"virtual_key": preloadedVk,
 	}, h.logger)
 }
 
-// GetVirtualKey handles GET /api/governance/virtual-keys/{vk_id} - Get a specific virtual key
-func (h *GovernanceHandler) GetVirtualKey(ctx *fasthttp.RequestCtx) {
+// getVirtualKey handles GET /api/governance/virtual-keys/{vk_id} - Get a specific virtual key
+func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
 
-	var vk governance.VirtualKey
-	if err := h.db.Preload("Team").Preload("Customer").Preload("Budget").Preload("RateLimit").First(&vk, "id = ?", vkID).Error; err != nil {
+	vk, err := h.configStore.GetVirtualKey(vkID)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			SendError(ctx, 404, "Virtual key not found", h.logger)
 			return
@@ -286,8 +309,8 @@ func (h *GovernanceHandler) GetVirtualKey(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// UpdateVirtualKey handles PUT /api/governance/virtual-keys/{vk_id} - Update a virtual key
-func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
+// updateVirtualKey handles PUT /api/governance/virtual-keys/{vk_id} - Update a virtual key
+func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
 
 	var req UpdateVirtualKeyRequest
@@ -302,8 +325,8 @@ func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	var vk governance.VirtualKey
-	if err := h.db.First(&vk, "id = ?", vkID).Error; err != nil {
+	vk, err := h.configStore.GetVirtualKey(vkID)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			SendError(ctx, 404, "Virtual key not found", h.logger)
 			return
@@ -312,7 +335,7 @@ func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
+	if err := h.configStore.ExecuteTransaction(func(tx *gorm.DB) error {
 		// Update fields if provided
 		if req.Description != nil {
 			vk.Description = *req.Description
@@ -339,7 +362,7 @@ func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.Budget != nil {
 			if vk.BudgetID != nil {
 				// Update existing budget
-				budget := governance.Budget{}
+				budget := configstore.TableBudget{}
 				if err := tx.First(&budget, "id = ?", *vk.BudgetID).Error; err != nil {
 					return err
 				}
@@ -351,22 +374,34 @@ func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
 					budget.ResetDuration = *req.Budget.ResetDuration
 				}
 
-				if err := tx.Save(&budget).Error; err != nil {
+				if err := h.configStore.UpdateBudget(&budget, tx); err != nil {
 					return err
 				}
+				vk.Budget = &budget
 			} else {
 				// Create new budget
-				budget := governance.Budget{
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
+				}
+				if *req.Budget.MaxLimit < 0 {
+					return fmt.Errorf("budget max_limit cannot be negative: %.2f", *req.Budget.MaxLimit)
+				}
+				if _, err := configstore.ParseDuration(*req.Budget.ResetDuration); err != nil {
+					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
+				}
+				// Storing now
+				budget := configstore.TableBudget{
 					ID:            uuid.NewString(),
 					MaxLimit:      *req.Budget.MaxLimit,
 					ResetDuration: *req.Budget.ResetDuration,
 					LastReset:     time.Now(),
 					CurrentUsage:  0,
 				}
-				if err := tx.Create(&budget).Error; err != nil {
+				if err := h.configStore.CreateBudget(&budget, tx); err != nil {
 					return err
 				}
 				vk.BudgetID = &budget.ID
+				vk.Budget = &budget
 			}
 		}
 
@@ -374,7 +409,7 @@ func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.RateLimit != nil {
 			if vk.RateLimitID != nil {
 				// Update existing rate limit
-				rateLimit := governance.RateLimit{}
+				rateLimit := configstore.TableRateLimit{}
 				if err := tx.First(&rateLimit, "id = ?", *vk.RateLimitID).Error; err != nil {
 					return err
 				}
@@ -392,12 +427,12 @@ func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
 					rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
 				}
 
-				if err := tx.Save(&rateLimit).Error; err != nil {
+				if err := h.configStore.UpdateRateLimit(&rateLimit, tx); err != nil {
 					return err
 				}
 			} else {
 				// Create new rate limit
-				rateLimit := governance.RateLimit{
+				rateLimit := configstore.TableRateLimit{
 					ID:                   uuid.NewString(),
 					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
 					TokenResetDuration:   req.RateLimit.TokenResetDuration,
@@ -406,51 +441,73 @@ func (h *GovernanceHandler) UpdateVirtualKey(ctx *fasthttp.RequestCtx) {
 					TokenLastReset:       time.Now(),
 					RequestLastReset:     time.Now(),
 				}
-				if err := tx.Create(&rateLimit).Error; err != nil {
+				if err := h.configStore.CreateRateLimit(&rateLimit, tx); err != nil {
 					return err
 				}
 				vk.RateLimitID = &rateLimit.ID
 			}
 		}
 
-		if err := tx.Save(&vk).Error; err != nil {
+		// Handle DBKey associations if provided
+		if req.KeyIDs != nil {
+			// Get the keys if DBKeyIDs are provided
+			var keys []configstore.TableKey
+			if len(*req.KeyIDs) > 0 {
+				var err error
+				keys, err = h.configStore.GetKeysByIDs(*req.KeyIDs)
+				if err != nil {
+					return fmt.Errorf("failed to get keys by IDs: %w", err)
+				}
+				if len(keys) != len(*req.KeyIDs) {
+					return fmt.Errorf("some keys not found: expected %d, found %d", len(*req.KeyIDs), len(keys))
+				}
+			}
+
+			// Set the keys for the many-to-many relationship
+			vk.Keys = keys
+		}
+
+		if err := h.configStore.UpdateVirtualKey(vk, tx); err != nil {
 			return err
 		}
 
 		return nil
 	}); err != nil {
+		h.logger.Error("failed to update virtual key: %v", err)
 		SendError(ctx, 500, "Failed to update virtual key", h.logger)
 		return
 	}
 
 	// Load relationships for response
-	if err := h.db.Preload("Team").Preload("Customer").Preload("Budget").Preload("RateLimit").First(&vk, "id = ?", vk.ID).Error; err != nil {
-		h.logger.Error(fmt.Errorf("failed to load relationships for updated VK: %w", err))
+	preloadedVk, err := h.configStore.GetVirtualKey(vk.ID)
+	if err != nil {
+		h.logger.Error("failed to load relationships for updated VK: %v", err)
+		preloadedVk = vk
 	}
 
 	// Update in-memory cache for budget and rate limit changes
-	if req.Budget != nil && vk.BudgetID != nil {
-		if err := h.pluginStore.UpdateBudgetInMemory(vk.Budget); err != nil {
-			h.logger.Error(fmt.Errorf("failed to update budget cache: %w", err))
+	if req.Budget != nil && preloadedVk.BudgetID != nil {
+		if err := h.pluginStore.UpdateBudgetInMemory(preloadedVk.Budget); err != nil {
+			h.logger.Error("failed to update budget cache: %v", err)
 		}
 	}
 
 	// Update in-memory store
-	h.pluginStore.UpdateVirtualKeyInMemory(&vk)
+	h.pluginStore.UpdateVirtualKeyInMemory(preloadedVk)
 
 	SendJSON(ctx, map[string]interface{}{
 		"message":     "Virtual key updated successfully",
-		"virtual_key": vk,
+		"virtual_key": preloadedVk,
 	}, h.logger)
 }
 
-// DeleteVirtualKey handles DELETE /api/governance/virtual-keys/{vk_id} - Delete a virtual key
-func (h *GovernanceHandler) DeleteVirtualKey(ctx *fasthttp.RequestCtx) {
+// deleteVirtualKey handles DELETE /api/governance/virtual-keys/{vk_id} - Delete a virtual key
+func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
 
 	// Fetch the virtual key from the database to get the budget and rate limit
-	var vk governance.VirtualKey
-	if err := h.db.First(&vk, "id = ?", vkID).Error; err != nil {
+	vk, err := h.configStore.GetVirtualKey(vkID)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			SendError(ctx, 404, "Virtual key not found", h.logger)
 			return
@@ -461,14 +518,12 @@ func (h *GovernanceHandler) DeleteVirtualKey(ctx *fasthttp.RequestCtx) {
 
 	budgetID := vk.BudgetID
 
-	result := h.db.Delete(&governance.VirtualKey{}, "id = ?", vkID)
-	if result.Error != nil {
+	if err := h.configStore.DeleteVirtualKey(vkID); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			SendError(ctx, 404, "Virtual key not found", h.logger)
+			return
+		}
 		SendError(ctx, 500, "Failed to delete virtual key", h.logger)
-		return
-	}
-
-	if result.RowsAffected == 0 {
-		SendError(ctx, 404, "Virtual key not found", h.logger)
 		return
 	}
 
@@ -487,20 +542,15 @@ func (h *GovernanceHandler) DeleteVirtualKey(ctx *fasthttp.RequestCtx) {
 
 // Team CRUD Operations
 
-// GetTeams handles GET /api/governance/teams - Get all teams
-func (h *GovernanceHandler) GetTeams(ctx *fasthttp.RequestCtx) {
-	var teams []governance.Team
+// getTeams handles GET /api/governance/teams - Get all teams
+func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
+	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 
 	// Preload relationships for complete information
-	query := h.db.Preload("Customer").Preload("Budget")
-
-	// Optional filtering by customer
-	if customerID := string(ctx.QueryArgs().Peek("customer_id")); customerID != "" {
-		query = query.Where("customer_id = ?", customerID)
-	}
-
-	if err := query.Find(&teams).Error; err != nil {
-		SendError(ctx, 500, "Failed to retrieve teams", h.logger)
+	teams, err := h.configStore.GetTeams(customerID)
+	if err != nil {
+		h.logger.Error("failed to retrieve teams: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to retrieve teams: %v", err), h.logger)
 		return
 	}
 
@@ -510,8 +560,8 @@ func (h *GovernanceHandler) GetTeams(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// CreateTeam handles POST /api/governance/teams - Create a new team
-func (h *GovernanceHandler) CreateTeam(ctx *fasthttp.RequestCtx) {
+// createTeam handles POST /api/governance/teams - Create a new team
+func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 	var req CreateTeamRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON", h.logger)
@@ -531,68 +581,71 @@ func (h *GovernanceHandler) CreateTeam(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Validate reset duration format
-		if _, err := governance.ParseDuration(req.Budget.ResetDuration); err != nil {
+		if _, err := configstore.ParseDuration(req.Budget.ResetDuration); err != nil {
 			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", req.Budget.ResetDuration), h.logger)
 			return
 		}
 	}
 
-	var team governance.Team
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
-		team = governance.Team{
+	var team configstore.TableTeam
+	if err := h.configStore.ExecuteTransaction(func(tx *gorm.DB) error {
+		team = configstore.TableTeam{
 			ID:         uuid.NewString(),
 			Name:       req.Name,
 			CustomerID: req.CustomerID,
 		}
 
 		if req.Budget != nil {
-			budget := governance.Budget{
+			budget := configstore.TableBudget{
 				ID:            uuid.NewString(),
 				MaxLimit:      req.Budget.MaxLimit,
 				ResetDuration: req.Budget.ResetDuration,
 				LastReset:     time.Now(),
 				CurrentUsage:  0,
 			}
-			if err := tx.Create(&budget).Error; err != nil {
+			if err := h.configStore.CreateBudget(&budget, tx); err != nil {
 				return err
 			}
 			team.BudgetID = &budget.ID
 		}
 
-		if err := tx.Create(&team).Error; err != nil {
+		if err := h.configStore.CreateTeam(&team, tx); err != nil {
 			return err
 		}
 		return nil
 	}); err != nil {
-		SendError(ctx, 500, "Failed to create team", h.logger)
+		h.logger.Error("failed to create team: %v", err)
+		SendError(ctx, 500, "failed to create team", h.logger)
 		return
 	}
 
 	// Load relationships for response
-	if err := h.db.Preload("Customer").Preload("Budget").First(&team, "id = ?", team.ID).Error; err != nil {
-		h.logger.Error(fmt.Errorf("failed to load relationships for created team: %w", err))
+	preloadedTeam, err := h.configStore.GetTeam(team.ID)
+	if err != nil {
+		h.logger.Error("failed to load relationships for created team: %v", err)
+		preloadedTeam = &team
 	}
 
 	// Add to in-memory store
-	h.pluginStore.CreateTeamInMemory(&team)
+	h.pluginStore.CreateTeamInMemory(preloadedTeam)
 
 	// If budget was created, add it to in-memory store
-	if team.BudgetID != nil {
-		h.pluginStore.CreateBudgetInMemory(team.Budget)
+	if preloadedTeam.BudgetID != nil {
+		h.pluginStore.CreateBudgetInMemory(preloadedTeam.Budget)
 	}
 
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Team created successfully",
-		"team":    team,
+		"team":    preloadedTeam,
 	}, h.logger)
 }
 
-// GetTeam handles GET /api/governance/teams/{team_id} - Get a specific team
-func (h *GovernanceHandler) GetTeam(ctx *fasthttp.RequestCtx) {
+// getTeam handles GET /api/governance/teams/{team_id} - Get a specific team
+func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
 	teamID := ctx.UserValue("team_id").(string)
 
-	var team governance.Team
-	if err := h.db.Preload("Customer").Preload("Budget").First(&team, "id = ?", teamID).Error; err != nil {
+	team, err := h.configStore.GetTeam(teamID)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			SendError(ctx, 404, "Team not found", h.logger)
 			return
@@ -606,8 +659,8 @@ func (h *GovernanceHandler) GetTeam(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// UpdateTeam handles PUT /api/governance/teams/{team_id} - Update a team
-func (h *GovernanceHandler) UpdateTeam(ctx *fasthttp.RequestCtx) {
+// updateTeam handles PUT /api/governance/teams/{team_id} - Update a team
+func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	teamID := ctx.UserValue("team_id").(string)
 
 	var req UpdateTeamRequest
@@ -616,8 +669,8 @@ func (h *GovernanceHandler) UpdateTeam(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	var team governance.Team
-	if err := h.db.First(&team, "id = ?", teamID).Error; err != nil {
+	team, err := h.configStore.GetTeam(teamID)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			SendError(ctx, 404, "Team not found", h.logger)
 			return
@@ -626,7 +679,7 @@ func (h *GovernanceHandler) UpdateTeam(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
+	if err := h.configStore.ExecuteTransaction(func(tx *gorm.DB) error {
 		// Update fields if provided
 		if req.Name != nil {
 			team.Name = *req.Name
@@ -639,8 +692,8 @@ func (h *GovernanceHandler) UpdateTeam(ctx *fasthttp.RequestCtx) {
 		if req.Budget != nil {
 			if team.BudgetID != nil {
 				// Update existing budget
-				budget := governance.Budget{}
-				if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
+				budget, err := h.configStore.GetBudget(*team.BudgetID, tx)
+				if err != nil {
 					return err
 				}
 
@@ -651,26 +704,28 @@ func (h *GovernanceHandler) UpdateTeam(ctx *fasthttp.RequestCtx) {
 					budget.ResetDuration = *req.Budget.ResetDuration
 				}
 
-				if err := tx.Save(&budget).Error; err != nil {
+				if err := h.configStore.UpdateBudget(budget, tx); err != nil {
 					return err
 				}
+				team.Budget = budget
 			} else {
 				// Create new budget
-				budget := governance.Budget{
+				budget := configstore.TableBudget{
 					ID:            uuid.NewString(),
 					MaxLimit:      *req.Budget.MaxLimit,
 					ResetDuration: *req.Budget.ResetDuration,
 					LastReset:     time.Now(),
 					CurrentUsage:  0,
 				}
-				if err := tx.Create(&budget).Error; err != nil {
+				if err := h.configStore.CreateBudget(&budget, tx); err != nil {
 					return err
 				}
 				team.BudgetID = &budget.ID
+				team.Budget = &budget
 			}
 		}
 
-		if err := tx.Save(&team).Error; err != nil {
+		if err := h.configStore.UpdateTeam(team, tx); err != nil {
 			return err
 		}
 
@@ -683,30 +738,32 @@ func (h *GovernanceHandler) UpdateTeam(ctx *fasthttp.RequestCtx) {
 	// Update in-memory cache for budget changes
 	if req.Budget != nil && team.BudgetID != nil {
 		if err := h.pluginStore.UpdateBudgetInMemory(team.Budget); err != nil {
-			h.logger.Error(fmt.Errorf("failed to update budget cache: %w", err))
+			h.logger.Error("failed to update budget cache: %v", err)
 		}
 	}
 
 	// Load relationships for response
-	if err := h.db.Preload("Customer").Preload("Budget").First(&team, "id = ?", team.ID).Error; err != nil {
-		h.logger.Error(fmt.Errorf("failed to load relationships for updated team: %w", err))
+	preloadedTeam, err := h.configStore.GetTeam(team.ID)
+	if err != nil {
+		h.logger.Error("failed to load relationships for updated team: %v", err)
+		preloadedTeam = team
 	}
 
 	// Update in-memory store
-	h.pluginStore.UpdateTeamInMemory(&team)
+	h.pluginStore.UpdateTeamInMemory(preloadedTeam)
 
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Team updated successfully",
-		"team":    team,
+		"team":    preloadedTeam,
 	}, h.logger)
 }
 
-// DeleteTeam handles DELETE /api/governance/teams/{team_id} - Delete a team
-func (h *GovernanceHandler) DeleteTeam(ctx *fasthttp.RequestCtx) {
+// deleteTeam handles DELETE /api/governance/teams/{team_id} - Delete a team
+func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 	teamID := ctx.UserValue("team_id").(string)
 
-	var team governance.Team
-	if err := h.db.First(&team, "id = ?", teamID).Error; err != nil {
+	team, err := h.configStore.GetTeam(teamID)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			SendError(ctx, 404, "Team not found", h.logger)
 			return
@@ -717,14 +774,12 @@ func (h *GovernanceHandler) DeleteTeam(ctx *fasthttp.RequestCtx) {
 
 	budgetID := team.BudgetID
 
-	result := h.db.Delete(&governance.Team{}, "id = ?", teamID)
-	if result.Error != nil {
+	if err := h.configStore.DeleteTeam(teamID); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			SendError(ctx, 404, "Team not found", h.logger)
+			return
+		}
 		SendError(ctx, 500, "Failed to delete team", h.logger)
-		return
-	}
-
-	if result.RowsAffected == 0 {
-		SendError(ctx, 404, "Team not found", h.logger)
 		return
 	}
 
@@ -743,13 +798,12 @@ func (h *GovernanceHandler) DeleteTeam(ctx *fasthttp.RequestCtx) {
 
 // Customer CRUD Operations
 
-// GetCustomers handles GET /api/governance/customers - Get all customers
-func (h *GovernanceHandler) GetCustomers(ctx *fasthttp.RequestCtx) {
-	var customers []governance.Customer
-
-	// Preload relationships for complete information
-	if err := h.db.Preload("Teams").Preload("Budget").Find(&customers).Error; err != nil {
-		SendError(ctx, 500, "Failed to retrieve customers", h.logger)
+// getCustomers handles GET /api/governance/customers - Get all customers
+func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
+	customers, err := h.configStore.GetCustomers()
+	if err != nil {
+		h.logger.Error("failed to retrieve customers: %v", err)
+		SendError(ctx, 500, "failed to retrieve customers", h.logger)
 		return
 	}
 
@@ -759,8 +813,8 @@ func (h *GovernanceHandler) GetCustomers(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// CreateCustomer handles POST /api/governance/customers - Create a new customer
-func (h *GovernanceHandler) CreateCustomer(ctx *fasthttp.RequestCtx) {
+// createCustomer handles POST /api/governance/customers - Create a new customer
+func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 	var req CreateCustomerRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON", h.logger)
@@ -780,67 +834,69 @@ func (h *GovernanceHandler) CreateCustomer(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Validate reset duration format
-		if _, err := governance.ParseDuration(req.Budget.ResetDuration); err != nil {
+		if _, err := configstore.ParseDuration(req.Budget.ResetDuration); err != nil {
 			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", req.Budget.ResetDuration), h.logger)
 			return
 		}
 	}
 
-	var customer governance.Customer
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
-		customer = governance.Customer{
+	var customer configstore.TableCustomer
+	if err := h.configStore.ExecuteTransaction(func(tx *gorm.DB) error {
+		customer = configstore.TableCustomer{
 			ID:   uuid.NewString(),
 			Name: req.Name,
 		}
 
 		if req.Budget != nil {
-			budget := governance.Budget{
+			budget := configstore.TableBudget{
 				ID:            uuid.NewString(),
 				MaxLimit:      req.Budget.MaxLimit,
 				ResetDuration: req.Budget.ResetDuration,
 				LastReset:     time.Now(),
 				CurrentUsage:  0,
 			}
-			if err := tx.Create(&budget).Error; err != nil {
+			if err := h.configStore.CreateBudget(&budget, tx); err != nil {
 				return err
 			}
 			customer.BudgetID = &budget.ID
 		}
 
-		if err := tx.Create(&customer).Error; err != nil {
+		if err := h.configStore.CreateCustomer(&customer, tx); err != nil {
 			return err
 		}
 		return nil
 	}); err != nil {
-		SendError(ctx, 500, "Failed to create customer", h.logger)
+		SendError(ctx, 500, "failed to create customer", h.logger)
 		return
 	}
 
 	// Load relationships for response
-	if err := h.db.Preload("Teams").Preload("Budget").First(&customer, "id = ?", customer.ID).Error; err != nil {
-		h.logger.Error(fmt.Errorf("failed to load relationships for created customer: %w", err))
+	preloadedCustomer, err := h.configStore.GetCustomer(customer.ID)
+	if err != nil {
+		h.logger.Error("failed to load relationships for created customer: %v", err)
+		preloadedCustomer = &customer
 	}
 
 	// Add to in-memory store
-	h.pluginStore.CreateCustomerInMemory(&customer)
+	h.pluginStore.CreateCustomerInMemory(preloadedCustomer)
 
 	// If budget was created, add it to in-memory store
-	if customer.BudgetID != nil {
-		h.pluginStore.CreateBudgetInMemory(customer.Budget)
+	if preloadedCustomer.BudgetID != nil {
+		h.pluginStore.CreateBudgetInMemory(preloadedCustomer.Budget)
 	}
 
 	SendJSON(ctx, map[string]interface{}{
 		"message":  "Customer created successfully",
-		"customer": customer,
+		"customer": preloadedCustomer,
 	}, h.logger)
 }
 
-// GetCustomer handles GET /api/governance/customers/{customer_id} - Get a specific customer
-func (h *GovernanceHandler) GetCustomer(ctx *fasthttp.RequestCtx) {
+// getCustomer handles GET /api/governance/customers/{customer_id} - Get a specific customer
+func (h *GovernanceHandler) getCustomer(ctx *fasthttp.RequestCtx) {
 	customerID := ctx.UserValue("customer_id").(string)
 
-	var customer governance.Customer
-	if err := h.db.Preload("Teams").Preload("Budget").First(&customer, "id = ?", customerID).Error; err != nil {
+	customer, err := h.configStore.GetCustomer(customerID)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			SendError(ctx, 404, "Customer not found", h.logger)
 			return
@@ -854,8 +910,8 @@ func (h *GovernanceHandler) GetCustomer(ctx *fasthttp.RequestCtx) {
 	}, h.logger)
 }
 
-// UpdateCustomer handles PUT /api/governance/customers/{customer_id} - Update a customer
-func (h *GovernanceHandler) UpdateCustomer(ctx *fasthttp.RequestCtx) {
+// updateCustomer handles PUT /api/governance/customers/{customer_id} - Update a customer
+func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	customerID := ctx.UserValue("customer_id").(string)
 
 	var req UpdateCustomerRequest
@@ -864,8 +920,8 @@ func (h *GovernanceHandler) UpdateCustomer(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	var customer governance.Customer
-	if err := h.db.First(&customer, "id = ?", customerID).Error; err != nil {
+	customer, err := h.configStore.GetCustomer(customerID)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			SendError(ctx, 404, "Customer not found", h.logger)
 			return
@@ -874,7 +930,7 @@ func (h *GovernanceHandler) UpdateCustomer(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
+	if err := h.configStore.ExecuteTransaction(func(tx *gorm.DB) error {
 		// Update fields if provided
 		if req.Name != nil {
 			customer.Name = *req.Name
@@ -884,8 +940,8 @@ func (h *GovernanceHandler) UpdateCustomer(ctx *fasthttp.RequestCtx) {
 		if req.Budget != nil {
 			if customer.BudgetID != nil {
 				// Update existing budget
-				budget := governance.Budget{}
-				if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
+				budget, err := h.configStore.GetBudget(*customer.BudgetID, tx)
+				if err != nil {
 					return err
 				}
 
@@ -896,26 +952,28 @@ func (h *GovernanceHandler) UpdateCustomer(ctx *fasthttp.RequestCtx) {
 					budget.ResetDuration = *req.Budget.ResetDuration
 				}
 
-				if err := tx.Save(&budget).Error; err != nil {
+				if err := h.configStore.UpdateBudget(budget, tx); err != nil {
 					return err
 				}
+				customer.Budget = budget
 			} else {
 				// Create new budget
-				budget := governance.Budget{
+				budget := configstore.TableBudget{
 					ID:            uuid.NewString(),
 					MaxLimit:      *req.Budget.MaxLimit,
 					ResetDuration: *req.Budget.ResetDuration,
 					LastReset:     time.Now(),
 					CurrentUsage:  0,
 				}
-				if err := tx.Create(&budget).Error; err != nil {
+				if err := h.configStore.CreateBudget(&budget, tx); err != nil {
 					return err
 				}
 				customer.BudgetID = &budget.ID
+				customer.Budget = &budget
 			}
 		}
 
-		if err := tx.Save(&customer).Error; err != nil {
+		if err := h.configStore.UpdateCustomer(customer, tx); err != nil {
 			return err
 		}
 
@@ -928,30 +986,32 @@ func (h *GovernanceHandler) UpdateCustomer(ctx *fasthttp.RequestCtx) {
 	// Update in-memory cache for budget changes
 	if req.Budget != nil && customer.BudgetID != nil {
 		if err := h.pluginStore.UpdateBudgetInMemory(customer.Budget); err != nil {
-			h.logger.Error(fmt.Errorf("failed to update budget cache: %w", err))
+			h.logger.Error("failed to update budget cache: %v", err)
 		}
 	}
 
 	// Load relationships for response
-	if err := h.db.Preload("Teams").Preload("Budget").First(&customer, "id = ?", customer.ID).Error; err != nil {
-		h.logger.Error(fmt.Errorf("failed to load relationships for updated customer: %w", err))
+	preloadedCustomer, err := h.configStore.GetCustomer(customer.ID)
+	if err != nil {
+		h.logger.Error("failed to load relationships for updated customer: %v", err)
+		preloadedCustomer = customer
 	}
 
 	// Update in-memory store
-	h.pluginStore.UpdateCustomerInMemory(&customer)
+	h.pluginStore.UpdateCustomerInMemory(preloadedCustomer)
 
 	SendJSON(ctx, map[string]interface{}{
 		"message":  "Customer updated successfully",
-		"customer": customer,
+		"customer": preloadedCustomer,
 	}, h.logger)
 }
 
-// DeleteCustomer handles DELETE /api/governance/customers/{customer_id} - Delete a customer
-func (h *GovernanceHandler) DeleteCustomer(ctx *fasthttp.RequestCtx) {
+// deleteCustomer handles DELETE /api/governance/customers/{customer_id} - Delete a customer
+func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 	customerID := ctx.UserValue("customer_id").(string)
 
-	var customer governance.Customer
-	if err := h.db.First(&customer, "id = ?", customerID).Error; err != nil {
+	customer, err := h.configStore.GetCustomer(customerID)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			SendError(ctx, 404, "Customer not found", h.logger)
 			return
@@ -962,14 +1022,12 @@ func (h *GovernanceHandler) DeleteCustomer(ctx *fasthttp.RequestCtx) {
 
 	budgetID := customer.BudgetID
 
-	result := h.db.Delete(&governance.Customer{}, "id = ?", customerID)
-	if result.Error != nil {
+	if err := h.configStore.DeleteCustomer(customerID); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			SendError(ctx, 404, "Customer not found", h.logger)
+			return
+		}
 		SendError(ctx, 500, "Failed to delete customer", h.logger)
-		return
-	}
-
-	if result.RowsAffected == 0 {
-		SendError(ctx, 404, "Customer not found", h.logger)
 		return
 	}
 

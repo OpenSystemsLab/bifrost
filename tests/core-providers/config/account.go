@@ -13,6 +13,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// ProviderOpenAICustom represents the custom OpenAI provider for testing
+const ProviderOpenAICustom = schemas.ModelProvider("openai-custom")
+
 // TestScenarios defines the comprehensive test scenarios
 type TestScenarios struct {
 	TextCompletion        bool
@@ -32,17 +35,21 @@ type TestScenarios struct {
 	SpeechSynthesisStream bool // Streaming text-to-speech functionality
 	Transcription         bool // Speech-to-text functionality
 	TranscriptionStream   bool // Streaming speech-to-text functionality
+	Embedding             bool // Embedding functionality
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
 type ComprehensiveTestConfig struct {
-	Provider     schemas.ModelProvider
-	ChatModel    string
-	TextModel    string
-	Scenarios    TestScenarios
-	CustomParams *schemas.ModelParameters
-	Fallbacks    []schemas.Fallback
-	SkipReason   string // Reason to skip certain tests
+	Provider             schemas.ModelProvider
+	ChatModel            string
+	TextModel            string
+	EmbeddingModel       string
+	TranscriptionModel   string
+	SpeechSynthesisModel string
+	Scenarios            TestScenarios
+	CustomParams         *schemas.ModelParameters
+	Fallbacks            []schemas.Fallback
+	SkipReason           string // Reason to skip certain tests
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
@@ -71,6 +78,9 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.SGL,
 		schemas.Parasail,
 		schemas.Cerebras,
+		schemas.Gemini,
+		schemas.OpenRouter,
+		ProviderOpenAICustom,
 	}, nil
 }
 
@@ -81,6 +91,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("OPENAI_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		}, nil
+	case ProviderOpenAICustom:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("GROQ_API_KEY"), // Use GROQ API key for OpenAI-compatible endpoint
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -99,7 +117,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				Models: []string{"anthropic.claude-v2:1", "mistral.mixtral-8x7b-instruct-v0:1", "mistral.mistral-large-2402-v1:0", "anthropic.claude-3-sonnet-20240229-v1:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey:    os.Getenv("AWS_ACCESS_KEY"),
+					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
 					SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"),
 					SessionToken: bifrost.Ptr(os.Getenv("AWS_SESSION_TOKEN")),
 					Region:       bifrost.Ptr(getEnvWithDefault("AWS_REGION", "us-east-1")),
@@ -118,12 +136,13 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("AZURE_API_KEY"),
-				Models: []string{"gpt-4o"},
+				Models: []string{"gpt-4o", "text-embedding-3-small"},
 				Weight: 1.0,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: os.Getenv("AZURE_ENDPOINT"),
 					Deployments: map[string]string{
-						"gpt-4o": "gpt-4o-aug",
+						"gpt-4o":                 "gpt-4o-aug",
+						"text-embedding-3-small": "text-embedding-3-small-deployment",
 					},
 					// Use environment variable for API version with fallback to current preview version
 					// Note: This is a preview API version that may change over time. Update as needed.
@@ -149,7 +168,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("MISTRAL_API_KEY"),
-				Models: []string{"mistral-large-2411", "pixtral-12b-latest"},
+				Models: []string{"mistral-large-2411", "pixtral-12b-latest", "mistral-embed"},
 				Weight: 1.0,
 			},
 		}, nil
@@ -177,6 +196,22 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				Weight: 1.0,
 			},
 		}, nil
+	case schemas.Gemini:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("GEMINI_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		}, nil
+	case schemas.OpenRouter:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("OPENROUTER_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -188,7 +223,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.OpenAI:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 30,
+				DefaultRequestTimeoutInSeconds: 60,
 				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
@@ -196,6 +231,33 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: 3,
 				BufferSize:  10,
+			},
+		}, nil
+	case ProviderOpenAICustom:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        getEnvWithDefault("GROQ_OPENAI_BASE_URL", "https://api.groq.com/openai"),
+				DefaultRequestTimeoutInSeconds: 60,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: 3,
+				BufferSize:  10,
+			},
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				BaseProviderType: schemas.OpenAI,
+				AllowedRequests: &schemas.AllowedRequests{
+					TextCompletion:       false,
+					ChatCompletion:       true,
+					ChatCompletionStream: true,
+					Embedding:            false,
+					Speech:               false,
+					SpeechStream:         false,
+					Transcription:        false,
+					TranscriptionStream:  false,
+				},
 			},
 		}, nil
 	case schemas.Anthropic:
@@ -206,7 +268,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Bedrock:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 30,
+				DefaultRequestTimeoutInSeconds: 60,
 				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
@@ -224,7 +286,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Azure:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 30,
+				DefaultRequestTimeoutInSeconds: 60,
 				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
@@ -237,7 +299,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Vertex:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 30,
+				DefaultRequestTimeoutInSeconds: 60,
 				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
@@ -250,7 +312,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Ollama:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 30,
+				DefaultRequestTimeoutInSeconds: 60,
 				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
@@ -272,7 +334,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				BaseURL:                        os.Getenv("SGL_BASE_URL"),
-				DefaultRequestTimeoutInSeconds: 30,
+				DefaultRequestTimeoutInSeconds: 60,
 				MaxRetries:                     1,
 				RetryBackoffInitial:            100 * time.Millisecond,
 				RetryBackoffMax:                2 * time.Second,
@@ -289,6 +351,26 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig:            schemas.DefaultNetworkConfig,
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}, nil
+	case schemas.Gemini:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 60,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	case schemas.OpenRouter:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 60,
+				MaxRetries:                     1,
+				RetryBackoffInitial:            100 * time.Millisecond,
+				RetryBackoffMax:                2 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -297,9 +379,11 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 // AllProviderConfigs contains test configurations for all providers
 var AllProviderConfigs = []ComprehensiveTestConfig{
 	{
-		Provider:  schemas.OpenAI,
-		ChatModel: "gpt-4o-mini",
-		TextModel: "", // OpenAI doesn't support text completion in newer models
+		Provider:             schemas.OpenAI,
+		ChatModel:            "gpt-4o-mini",
+		TextModel:            "", // OpenAI doesn't support text completion in newer models
+		TranscriptionModel:   "whisper-1",
+		SpeechSynthesisModel: "tts-1",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -314,10 +398,11 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
-			SpeechSynthesis:       true,  // OpenAI supports TTS
-			SpeechSynthesisStream: true,  // OpenAI supports streaming TTS
-			Transcription:         false, // OpenAI supports STT with Whisper
-			TranscriptionStream:   false, // OpenAI supports streaming STT
+			SpeechSynthesis:       true, // OpenAI supports TTS
+			SpeechSynthesisStream: true, // OpenAI supports streaming TTS
+			Transcription:         true, // OpenAI supports STT with Whisper
+			TranscriptionStream:   true, // OpenAI supports streaming STT
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
@@ -345,6 +430,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             false,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -372,6 +458,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -399,6 +486,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -426,6 +514,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported yet
 			Transcription:         false, // Not supported yet
 			TranscriptionStream:   false, // Not supported yet
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -453,6 +542,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -479,6 +569,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -506,6 +597,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             false,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -533,6 +625,94 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
+			Embedding:             false,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:  ProviderOpenAICustom,
+		ChatModel: "llama-3.3-70b-versatile",
+		TextModel: "", // Custom OpenAI instance doesn't support text completion
+		Scenarios: TestScenarios{
+			TextCompletion:        false,
+			SimpleChat:            true, // Enable simple chat for testing
+			ChatCompletionStream:  true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              false,
+			ImageBase64:           false,
+			MultipleImages:        false,
+			CompleteEnd2End:       true,
+			ProviderSpecific:      true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
+			Embedding:             false,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:             schemas.Gemini,
+		ChatModel:            "gemini-2.0-flash",
+		TextModel:            "", // GenAI doesn't support text completion in newer models
+		TranscriptionModel:   "gemini-2.5-flash",
+		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
+		EmbeddingModel:       "text-embedding-004",
+		Scenarios: TestScenarios{
+			TextCompletion:        false, // Not supported
+			SimpleChat:            true,
+			ChatCompletionStream:  true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			ProviderSpecific:      true,
+			SpeechSynthesis:       true,
+			SpeechSynthesisStream: true,
+			Transcription:         true,
+			TranscriptionStream:   true,
+			Embedding:             true,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:  schemas.OpenRouter,
+		ChatModel: "openai/gpt-4o",
+		TextModel: "google/gemini-2.5-flash",
+		Scenarios: TestScenarios{
+			TextCompletion:        true,
+			SimpleChat:            true,
+			ChatCompletionStream:  true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			ProviderSpecific:      true,
+			SpeechSynthesis:       false,
+			SpeechSynthesisStream: false,
+			Transcription:         false,
+			TranscriptionStream:   false,
+			Embedding:             false, 
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

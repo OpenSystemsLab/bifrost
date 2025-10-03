@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	DefaultInitialPoolSize = 100
+	DefaultInitialPoolSize = 5000
 )
 
 // BifrostConfig represents the configuration for initializing a Bifrost instance.
@@ -38,19 +38,77 @@ const (
 type ModelProvider string
 
 const (
-	OpenAI    ModelProvider = "openai"
-	Azure     ModelProvider = "azure"
-	Anthropic ModelProvider = "anthropic"
-	Bedrock   ModelProvider = "bedrock"
-	Cohere    ModelProvider = "cohere"
-	Vertex    ModelProvider = "vertex"
-	Mistral   ModelProvider = "mistral"
-	Ollama    ModelProvider = "ollama"
-	Groq      ModelProvider = "groq"
-	SGL       ModelProvider = "sgl"
-	Parasail  ModelProvider = "parasail"
-	Cerebras  ModelProvider = "cerebras"
+	OpenAI     ModelProvider = "openai"
+	Azure      ModelProvider = "azure"
+	Anthropic  ModelProvider = "anthropic"
+	Bedrock    ModelProvider = "bedrock"
+	Cohere     ModelProvider = "cohere"
+	Vertex     ModelProvider = "vertex"
+	Mistral    ModelProvider = "mistral"
+	Ollama     ModelProvider = "ollama"
+	Groq       ModelProvider = "groq"
+	SGL        ModelProvider = "sgl"
+	Parasail   ModelProvider = "parasail"
+	Cerebras   ModelProvider = "cerebras"
+	Gemini     ModelProvider = "gemini"
+	OpenRouter ModelProvider = "openrouter"
 )
+
+// SupportedBaseProviders is the list of base providers allowed for custom providers.
+var SupportedBaseProviders = []ModelProvider{
+	Anthropic,
+	Bedrock,
+	Cohere,
+	Gemini,
+	OpenAI,
+}
+
+// StandardProviders is the list of all built-in (non-custom) providers.
+var StandardProviders = []ModelProvider{
+	Anthropic,
+	Azure,
+	Bedrock,
+	Cerebras,
+	Cohere,
+	Gemini,
+	Groq,
+	Mistral,
+	Ollama,
+	OpenAI,
+	Parasail,
+	SGL,
+	Vertex,
+	OpenRouter,
+}
+
+// RequestType represents the type of request being made to a provider.
+type RequestType string
+
+const (
+	TextCompletionRequest       RequestType = "text_completion"
+	ChatCompletionRequest       RequestType = "chat_completion"
+	ChatCompletionStreamRequest RequestType = "chat_completion_stream"
+	EmbeddingRequest            RequestType = "embedding"
+	SpeechRequest               RequestType = "speech"
+	SpeechStreamRequest         RequestType = "speech_stream"
+	TranscriptionRequest        RequestType = "transcription"
+	TranscriptionStreamRequest  RequestType = "transcription_stream"
+)
+
+// BifrostContextKey is a type for context keys used in Bifrost.
+type BifrostContextKey string
+
+// BifrostContextKeyRequestType is a context key for the request type.
+const (
+	BifrostContextKeyDirectKey          BifrostContextKey = "bifrost-direct-key"
+	BifrostContextKeyStreamEndIndicator BifrostContextKey = "bifrost-stream-end-indicator"
+	BifrostContextKeyRequestType        BifrostContextKey = "bifrost-request-type"
+	BifrostContextKeyRequestProvider    BifrostContextKey = "bifrost-request-provider"
+	BifrostContextKeyRequestModel       BifrostContextKey = "bifrost-request-model"
+)
+
+// NOTE: for custom plugin implementation dealing with streaming short circuit,
+// make sure to mark BifrostContextKeyStreamEndIndicator as true at the end of the stream.
 
 //* Request Structs
 
@@ -66,7 +124,77 @@ type RequestInput struct {
 
 // EmbeddingInput represents the input for an embedding request.
 type EmbeddingInput struct {
-	Texts []string `json:"texts"`
+	Text       *string
+	Texts      []string
+	Embedding  []int
+	Embeddings [][]int
+}
+
+func (e *EmbeddingInput) MarshalJSON() ([]byte, error) {
+	// enforce one-of
+	set := 0
+	if e.Text != nil {
+		set++
+	}
+	if e.Texts != nil {
+		set++
+	}
+	if e.Embedding != nil {
+		set++
+	}
+	if e.Embeddings != nil {
+		set++
+	}
+	if set == 0 {
+		return nil, fmt.Errorf("embedding input is empty")
+	}
+	if set > 1 {
+		return nil, fmt.Errorf("embedding input must set exactly one of: text, texts, embedding, embeddings")
+	}
+
+	if e.Text != nil {
+		return sonic.Marshal(*e.Text)
+	}
+	if e.Texts != nil {
+		return sonic.Marshal(e.Texts)
+	}
+	if e.Embedding != nil {
+		return sonic.Marshal(e.Embedding)
+	}
+	if e.Embeddings != nil {
+		return sonic.Marshal(e.Embeddings)
+	}
+
+	return nil, fmt.Errorf("invalid embedding input")
+}
+
+func (e *EmbeddingInput) UnmarshalJSON(data []byte) error {
+	// Try string
+	var s string
+	if err := sonic.Unmarshal(data, &s); err == nil {
+		e.Text = &s
+		return nil
+	}
+	// Try []string
+	var ss []string
+	if err := sonic.Unmarshal(data, &ss); err == nil {
+		e.Texts = ss
+		return nil
+	}
+	// Try []int
+	var i []int
+	if err := sonic.Unmarshal(data, &i); err == nil {
+		e.Embedding = i
+		return nil
+	}
+	// Try [][]int
+	var i2 [][]int
+	if err := sonic.Unmarshal(data, &i2); err == nil {
+		e.Embeddings = i2
+		return nil
+	}
+
+	return fmt.Errorf("unsupported embedding input shape")
 }
 
 // SpeechInput represents the input for a speech request.
@@ -137,6 +265,7 @@ type TranscriptionInput struct {
 	Language       *string `json:"language,omitempty"`
 	Prompt         *string `json:"prompt,omitempty"`
 	ResponseFormat *string `json:"response_format,omitempty"` // Default is "json"
+	Format         *string `json:"file_format,omitempty"`     // Type of file, not required in openai, but required in gemini
 }
 
 // BifrostRequest represents a request to be processed by Bifrost.
@@ -341,14 +470,16 @@ func (mc *MessageContent) UnmarshalJSON(data []byte) error {
 type ContentBlockType string
 
 const (
-	ContentBlockTypeText  ContentBlockType = "text"
-	ContentBlockTypeImage ContentBlockType = "image_url"
+	ContentBlockTypeText       ContentBlockType = "text"
+	ContentBlockTypeImage      ContentBlockType = "image_url"
+	ContentBlockTypeInputAudio ContentBlockType = "input_audio"
 )
 
 type ContentBlock struct {
-	Type     ContentBlockType `json:"type"`
-	Text     *string          `json:"text,omitempty"`
-	ImageURL *ImageURLStruct  `json:"image_url,omitempty"`
+	Type       ContentBlockType  `json:"type"`
+	Text       *string           `json:"text,omitempty"`
+	ImageURL   *ImageURLStruct   `json:"image_url,omitempty"`
+	InputAudio *InputAudioStruct `json:"input_audio,omitempty"`
 }
 
 // ToolMessage represents a message from a tool
@@ -368,6 +499,14 @@ type AssistantMessage struct {
 type ImageURLStruct struct {
 	URL    string  `json:"url"`
 	Detail *string `json:"detail,omitempty"`
+}
+
+// InputAudioStruct represents audio data in a message.
+// Data carries the audio payload as a string (e.g., data URL or provider-accepted encoded content).
+// Format is optional (e.g., "wav", "mp3"); when nil, providers may attempt auto-detection.
+type InputAudioStruct struct {
+	Data   string  `json:"data"`
+	Format *string `json:"format,omitempty"`
 }
 
 //* Response Structs
@@ -652,13 +791,31 @@ type TranscriptionUsage struct {
 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
-	Provider    ModelProvider     `json:"provider"`
-	Params      ModelParameters   `json:"model_params"`
-	Latency     *float64          `json:"latency,omitempty"`
-	ChatHistory *[]BifrostMessage `json:"chat_history,omitempty"`
-	BilledUsage *BilledLLMUsage   `json:"billed_usage,omitempty"`
-	ChunkIndex  int               `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
-	RawResponse interface{}       `json:"raw_response"`
+	Provider    ModelProvider      `json:"provider"`
+	Params      ModelParameters    `json:"model_params"`
+	Latency     *float64           `json:"latency,omitempty"`
+	ChatHistory *[]BifrostMessage  `json:"chat_history,omitempty"`
+	BilledUsage *BilledLLMUsage    `json:"billed_usage,omitempty"`
+	ChunkIndex  int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawResponse interface{}        `json:"raw_response,omitempty"`
+	CacheDebug  *BifrostCacheDebug `json:"cache_debug,omitempty"`
+}
+
+// BifrostCacheDebug represents debug information about the cache.
+type BifrostCacheDebug struct {
+	CacheHit bool `json:"cache_hit"`
+
+	CacheID *string `json:"cache_id,omitempty"`
+	HitType *string `json:"hit_type,omitempty"`
+
+	// Semantic cache only (provider, model, and input tokens will be present for semantic cache, even if cache is not hit)
+	ProviderUsed *string `json:"provider_used,omitempty"`
+	ModelUsed    *string `json:"model_used,omitempty"`
+	InputTokens  *int    `json:"input_tokens,omitempty"`
+
+	// Semantic cache only (only when cache is hit)
+	Threshold  *float64 `json:"threshold,omitempty"`
+	Similarity *float64 `json:"similarity,omitempty"`
 }
 
 const (

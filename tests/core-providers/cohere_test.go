@@ -14,12 +14,13 @@ func TestCohere(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Cleanup()
+	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:  schemas.Cohere,
 		ChatModel: "command-a-03-2025",
 		TextModel: "", // Cohere focuses on chat
+		EmbeddingModel: "embed-english-v3.0",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
 			SimpleChat:            true,
@@ -34,6 +35,7 @@ func TestCohere(t *testing.T) {
 			MultipleImages:        false, // Check if supported
 			CompleteEnd2End:       true,
 			ProviderSpecific:      true,
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

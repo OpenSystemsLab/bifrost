@@ -163,7 +163,7 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, requestBody 
 
 		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
-			apiVersion = StrPtr("2024-02-01")
+			apiVersion = Ptr("2024-02-01")
 		}
 
 		url = fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s", url, deployment, path, *apiVersion)
@@ -337,23 +337,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, model string,
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *AzureProvider) Embedding(ctx context.Context, model string, key schemas.Key, input *schemas.EmbeddingInput, params *schemas.ModelParameters) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Prepare request body - Azure uses deployment-scoped URLs, so model is not needed in body
-	requestBody := map[string]interface{}{
-		"input": input.Texts,
-	}
-
-	// Merge any additional parameters
-	if params != nil {
-		if params.EncodingFormat != nil {
-			requestBody["encoding_format"] = *params.EncodingFormat
-		}
-		if params.Dimensions != nil {
-			requestBody["dimensions"] = *params.Dimensions
-		}
-		if params.User != nil {
-			requestBody["user"] = *params.User
-		}
-		requestBody = mergeConfig(requestBody, params.ExtraParams)
-	}
+	requestBody := prepareOpenAIEmbeddingRequest(input, params)
 
 	responseBody, err := provider.completeRequest(ctx, requestBody, "embeddings", key, model)
 	if err != nil {
@@ -419,7 +403,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 
 		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
-			apiVersion = StrPtr("2024-02-01")
+			apiVersion = Ptr("2024-02-01")
 		}
 
 		fullURL = fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", baseURL, deployment, *apiVersion)

@@ -14,12 +14,13 @@ func TestCerebras(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Cleanup()
+	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
 		Provider:  schemas.Cerebras,
 		ChatModel: "llama-3.3-70b",
 		TextModel: "llama3.1-8b",
+		EmbeddingModel: "", // Cerebras doesn't support embedding
 		Scenarios: config.TestScenarios{
 			TextCompletion:        true,
 			SimpleChat:            true,
@@ -34,6 +35,7 @@ func TestCerebras(t *testing.T) {
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
 			ProviderSpecific:      false,
+			Embedding:             false,
 		},
 	}
 

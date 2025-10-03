@@ -31,6 +31,8 @@ type VertexKeyConfig struct {
 	AuthCredentials string `json:"auth_credentials,omitempty"`
 }
 
+// NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string.
+
 // BedrockKeyConfig represents the AWS Bedrock-specific configuration.
 // It contains AWS-specific settings required for authentication and service access.
 type BedrockKeyConfig struct {
@@ -42,11 +44,8 @@ type BedrockKeyConfig struct {
 	Deployments  map[string]string `json:"deployments,omitempty"`   // Mapping of model identifiers to inference profiles
 }
 
-type BifrostContext string
-
-const (
-	BifrostContextKey BifrostContext = "bifrost-key"
-)
+// NOTE: To use Bedrock IAM role authentication, set both AccessKey and SecretKey to empty strings.
+// To use Bedrock API Key authentication, set Value in Key struct instead.
 
 // Account defines the interface for managing provider accounts and their configurations.
 // It provides methods to access provider-specific settings, API keys, and configurations.

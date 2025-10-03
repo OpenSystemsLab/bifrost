@@ -63,11 +63,20 @@ body:
       multiple: true
       options:
         - Core (Go)
+        - Framework
         - Transports (HTTP)
-        - Providers/Integrations
         - Plugins
         - UI (Next.js)
         - Docs
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Affected version(s).
+      placeholder: e.g., v1.0.3 
     validations:
       required: true
 

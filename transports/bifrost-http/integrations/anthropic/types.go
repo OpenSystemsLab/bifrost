@@ -413,6 +413,11 @@ func (r *AnthropicMessageRequest) ConvertToBifrostRequest() *schemas.BifrostRequ
 		bifrostReq.Params.ToolChoice = toolChoice
 	}
 
+	// Apply parameter validation
+	if bifrostReq.Params != nil {
+		bifrostReq.Params = integrations.ValidateAndFilterParamsForProvider(provider, bifrostReq.Params)
+	}
+
 	return bifrostReq
 }
 
@@ -455,7 +460,8 @@ func DeriveAnthropicFromBifrostResponse(bifrostResp *schemas.BifrostResponse) *A
 		choice := bifrostResp.Choices[0] // Anthropic typically returns one choice
 
 		if choice.FinishReason != nil {
-			anthropicResp.StopReason = choice.FinishReason
+			mappedReason := integrations.MapFinishReasonToProvider(*choice.FinishReason, schemas.Anthropic)
+			anthropicResp.StopReason = &mappedReason
 		}
 		if choice.StopString != nil {
 			anthropicResp.StopSequence = choice.StopString
@@ -572,11 +578,12 @@ func DeriveAnthropicStreamFromBifrostResponse(bifrostResp *schemas.BifrostRespon
 					}
 				}
 			} else if choice.FinishReason != nil && *choice.FinishReason != "" {
-				// Handle finish reason
+				// Handle finish reason - map back to Anthropic format
+				stopReason := integrations.MapFinishReasonToProvider(*choice.FinishReason, schemas.Anthropic)
 				streamResp.Type = "message_delta"
 				streamResp.Delta = &AnthropicStreamDelta{
 					Type:       "message_delta",
-					StopReason: choice.FinishReason,
+					StopReason: &stopReason,
 				}
 			}
 

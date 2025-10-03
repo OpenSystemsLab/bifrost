@@ -18,7 +18,7 @@ import (
 //
 // Environment Variables:
 //   - MAXIM_API_KEY: API key for Maxim SDK authentication
-//   - MAXIM_LOGGER_ID: ID for the Maxim logger instance
+//   - MAXIM_LOG_REPO_ID: ID for the Maxim logger instance
 //
 // Returns:
 //   - schemas.Plugin: A configured plugin instance for request/response tracing
@@ -29,11 +29,10 @@ func getPlugin() (schemas.Plugin, error) {
 		return nil, fmt.Errorf("MAXIM_API_KEY is not set, please set it in your environment variables")
 	}
 
-	if os.Getenv("MAXIM_LOGGER_ID") == "" {
-		return nil, fmt.Errorf("MAXIM_LOGGER_ID is not set, please set it in your environment variables")
-	}
-
-	plugin, err := NewMaximLoggerPlugin(os.Getenv("MAXIM_API_KEY"), os.Getenv("MAXIM_LOGGER_ID"))
+	plugin, err := Init(Config{
+		ApiKey:    os.Getenv("MAXIM_API_KEY"),
+		LogRepoId: os.Getenv("MAXIM_LOG_REPO_ID"),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -84,22 +83,23 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 //   - MAXIM_LOGGER_ID: Your Maxim logger repository ID
 //   - OPENAI_API_KEY: Your OpenAI API key for the test request
 func TestMaximLoggerPlugin(t *testing.T) {
+	ctx := context.Background()
 	// Initialize the Maxim plugin
 	plugin, err := getPlugin()
 	if err != nil {
-		log.Fatalf("Error setting up the plugin: %v", err)
+		t.Fatalf("Error setting up the plugin: %v", err)
 	}
 
 	account := BaseAccount{}
 
 	// Initialize Bifrost with the plugin
-	client, err := bifrost.Init(schemas.BifrostConfig{
+	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
 		Account: &account,
 		Plugins: []schemas.Plugin{plugin},
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelDebug),
 	})
 	if err != nil {
-		log.Fatalf("Error initializing Bifrost: %v", err)
+		t.Fatalf("Error initializing Bifrost: %v", err)
 	}
 
 	// Make a test chat completion request
@@ -124,5 +124,135 @@ func TestMaximLoggerPlugin(t *testing.T) {
 
 	log.Println("Bifrost request completed, check your Maxim Dashboard for the trace")
 
-	client.Cleanup()
+	client.Shutdown()
+}
+
+// TestLogRepoIDSelection tests the single repository selection logic
+func TestLogRepoIDSelection(t *testing.T) {
+	tests := []struct {
+		name         string
+		defaultRepo  string
+		headerRepo   string
+		expectedRepo string
+		shouldLog    bool
+	}{
+		{
+			name:         "Header repo takes priority",
+			defaultRepo:  "default-repo",
+			headerRepo:   "header-repo",
+			expectedRepo: "header-repo",
+			shouldLog:    true,
+		},
+		{
+			name:         "Fall back to default repo when no header",
+			defaultRepo:  "default-repo",
+			headerRepo:   "",
+			expectedRepo: "default-repo",
+			shouldLog:    true,
+		},
+		{
+			name:         "Use header repo when no default",
+			defaultRepo:  "",
+			headerRepo:   "header-repo",
+			expectedRepo: "header-repo",
+			shouldLog:    true,
+		},
+		{
+			name:         "Skip logging when neither available",
+			defaultRepo:  "",
+			headerRepo:   "",
+			expectedRepo: "",
+			shouldLog:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create plugin with default repo
+			plugin := &Plugin{
+				defaultLogRepoId: tt.defaultRepo,
+			}
+
+			// Create context with header repo if provided
+			ctx := context.Background()
+			if tt.headerRepo != "" {
+				ctx = context.WithValue(ctx, LogRepoIDKey, tt.headerRepo)
+			}
+
+			// Test the selection logic
+			result := plugin.getEffectiveLogRepoID(&ctx)
+
+			if result != tt.expectedRepo {
+				t.Errorf("Expected repo '%s', got '%s'", tt.expectedRepo, result)
+			}
+
+			shouldLog := result != ""
+			if shouldLog != tt.shouldLog {
+				t.Errorf("Expected shouldLog=%t, got shouldLog=%t", tt.shouldLog, shouldLog)
+			}
+		})
+	}
+}
+
+// TestPluginInitialization tests plugin initialization with different configs
+func TestPluginInitialization(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      Config
+		expectError bool
+	}{
+		{
+			name: "Valid config with both fields",
+			config: Config{
+				ApiKey:    "test-api-key",
+				LogRepoId: "test-repo-id",
+			},
+			expectError: false,
+		},
+		{
+			name: "Valid config with only API key",
+			config: Config{
+				ApiKey:    "test-api-key",
+				LogRepoId: "",
+			},
+			expectError: false,
+		},
+		{
+			name: "Invalid config - missing API key",
+			config: Config{
+				ApiKey:    "",
+				LogRepoId: "test-repo-id",
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Skip actual Maxim SDK initialization in tests
+			if tt.expectError {
+				_, err := Init(tt.config)
+				if err == nil {
+					t.Error("Expected error but got none")
+				}
+			} else {
+				// For valid configs, we can't test actual initialization without real API key
+				// Just test the validation logic
+				if tt.config.ApiKey == "" {
+					t.Skip("Skipping valid config test - would need real Maxim API key")
+				}
+			}
+		})
+	}
+}
+
+// TestPluginName tests the plugin name functionality
+func TestPluginName(t *testing.T) {
+	plugin := &Plugin{}
+	if plugin.GetName() != PluginName {
+		t.Errorf("Expected plugin name '%s', got '%s'", PluginName, plugin.GetName())
+	}
+	if PluginName != "maxim" {
+		t.Errorf("Expected PluginName constant to be 'maxim', got '%s'", PluginName)
+	}
 }

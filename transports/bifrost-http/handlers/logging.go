@@ -10,7 +10,8 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/logging"
+	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/valyala/fasthttp"
 )
 
@@ -31,16 +32,16 @@ func NewLoggingHandler(logManager logging.LogManager, logger schemas.Logger) *Lo
 // RegisterRoutes registers all logging-related routes
 func (h *LoggingHandler) RegisterRoutes(r *router.Router) {
 	// Log retrieval with filtering, search, and pagination
-	r.GET("/api/logs", h.GetLogs)
-	r.GET("/api/logs/dropped", h.GetDroppedRequests)
-	r.GET("/api/logs/models", h.GetAvailableModels)
+	r.GET("/api/logs", h.getLogs)
+	r.GET("/api/logs/dropped", h.getDroppedRequests)
+	r.GET("/api/logs/models", h.getAvailableModels)
 }
 
-// GetLogs handles GET /api/logs - Get logs with filtering, search, and pagination via query parameters
-func (h *LoggingHandler) GetLogs(ctx *fasthttp.RequestCtx) {
+// getLogs handles GET /api/logs - Get logs with filtering, search, and pagination via query parameters
+func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	// Parse query parameters into filters
-	filters := &logging.SearchFilters{}
-	pagination := &logging.PaginationOptions{}
+	filters := &logstore.SearchFilters{}
+	pagination := &logstore.PaginationOptions{}
 
 	// Extract filters from query parameters
 	if providers := string(ctx.QueryArgs().Peek("providers")); providers != "" {
@@ -85,6 +86,16 @@ func (h *LoggingHandler) GetLogs(ctx *fasthttp.RequestCtx) {
 			filters.MaxTokens = &val
 		}
 	}
+	if cost := string(ctx.QueryArgs().Peek("min_cost")); cost != "" {
+		if val, err := strconv.ParseFloat(cost, 64); err == nil {
+			filters.MinCost = &val
+		}
+	}
+	if maxCost := string(ctx.QueryArgs().Peek("max_cost")); maxCost != "" {
+		if val, err := strconv.ParseFloat(maxCost, 64); err == nil {
+			filters.MaxCost = &val
+		}
+	}
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -119,7 +130,7 @@ func (h *LoggingHandler) GetLogs(ctx *fasthttp.RequestCtx) {
 	// Sort parameters
 	pagination.SortBy = "timestamp" // Default sort field
 	if sortBy := string(ctx.QueryArgs().Peek("sort_by")); sortBy != "" {
-		if sortBy == "timestamp" || sortBy == "latency" || sortBy == "tokens" {
+		if sortBy == "timestamp" || sortBy == "latency" || sortBy == "tokens" || sortBy == "cost" {
 			pagination.SortBy = sortBy
 		}
 	}
@@ -133,22 +144,21 @@ func (h *LoggingHandler) GetLogs(ctx *fasthttp.RequestCtx) {
 
 	result, err := h.logManager.Search(filters, pagination)
 	if err != nil {
-		h.logger.Error(fmt.Errorf("failed to search logs: %w", err))
+		h.logger.Error("failed to search logs: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Search failed: %v", err), h.logger)
 		return
-	}
-
+	}	
 	SendJSON(ctx, result, h.logger)
 }
 
-// GetDroppedRequests handles GET /api/logs/dropped - Get the number of dropped requests
-func (h *LoggingHandler) GetDroppedRequests(ctx *fasthttp.RequestCtx) {
+// getDroppedRequests handles GET /api/logs/dropped - Get the number of dropped requests
+func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
 	droppedRequests := h.logManager.GetDroppedRequests()
 	SendJSON(ctx, map[string]int64{"dropped_requests": droppedRequests}, h.logger)
 }
 
-// GetAvailableModels handles GET /api/logs/models - Get all unique models from logs
-func (h *LoggingHandler) GetAvailableModels(ctx *fasthttp.RequestCtx) {
+// getAvailableModels handles GET /api/logs/models - Get all unique models from logs
+func (h *LoggingHandler) getAvailableModels(ctx *fasthttp.RequestCtx) {
 	models := h.logManager.GetAvailableModels()
 	SendJSON(ctx, map[string]interface{}{"models": models}, h.logger)
 }

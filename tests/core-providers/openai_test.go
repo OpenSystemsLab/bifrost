@@ -14,12 +14,15 @@ func TestOpenAI(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
-	defer client.Cleanup()
+	defer client.Shutdown()
 
 	testConfig := config.ComprehensiveTestConfig{
-		Provider:  schemas.OpenAI,
-		ChatModel: "gpt-4o-mini",
-		TextModel: "", // OpenAI doesn't support text completion in newer models
+		Provider:             schemas.OpenAI,
+		ChatModel:            "gpt-4o-mini",
+		TextModel:            "", // OpenAI doesn't support text completion in newer models
+		EmbeddingModel:       "text-embedding-3-small",
+		TranscriptionModel:   "whisper-1",
+		SpeechSynthesisModel: "tts-1",
 		Scenarios: config.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -36,8 +39,9 @@ func TestOpenAI(t *testing.T) {
 			ProviderSpecific:      true,
 			SpeechSynthesis:       true,
 			SpeechSynthesisStream: true,
-			Transcription:         false,
-			TranscriptionStream:   false,
+			Transcription:         true,
+			TranscriptionStream:   true,
+			Embedding:             true,
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},

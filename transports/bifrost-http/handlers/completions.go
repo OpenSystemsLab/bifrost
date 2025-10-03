@@ -74,7 +74,7 @@ type CompletionRequest struct {
 	Stream    *bool                    `json:"stream"`    // Whether to stream the response
 
 	// Speech inputs
-	Input          string                   `json:"input"`
+	Input          schemas.EmbeddingInput   `json:"input"` // string can be used for voice input as well
 	Voice          schemas.SpeechVoiceInput `json:"voice"`
 	Instructions   string                   `json:"instructions"`
 	ResponseFormat string                   `json:"response_format"`
@@ -93,6 +93,7 @@ type CompletionRequest struct {
 	EncodingFormat    *string             `json:"encoding_format,omitempty"`     // Format for embedding output (e.g., "float", "base64")
 	Dimensions        *int                `json:"dimensions,omitempty"`          // Number of dimensions for embedding output
 	User              *string             `json:"user,omitempty"`                // User identifier for tracking
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -265,35 +266,35 @@ func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) 
 // RegisterRoutes registers all completion-related routes
 func (h *CompletionHandler) RegisterRoutes(r *router.Router) {
 	// Completion endpoints
-	r.POST("/v1/text/completions", h.TextCompletion)
-	r.POST("/v1/chat/completions", h.ChatCompletion)
-	r.POST("/v1/embeddings", h.Embeddings)
-	r.POST("/v1/audio/speech", h.SpeechCompletion)
-	r.POST("/v1/audio/transcriptions", h.TranscriptionCompletion)
+	r.POST("/v1/text/completions", h.textCompletion)
+	r.POST("/v1/chat/completions", h.chatCompletion)
+	r.POST("/v1/embeddings", h.embeddings)
+	r.POST("/v1/audio/speech", h.speechCompletion)
+	r.POST("/v1/audio/transcriptions", h.transcriptionCompletion)
 }
 
-// TextCompletion handles POST /v1/text/completions - Process text completion requests
-func (h *CompletionHandler) TextCompletion(ctx *fasthttp.RequestCtx) {
+// textCompletion handles POST /v1/text/completions - Process text completion requests
+func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	h.handleRequest(ctx, CompletionTypeText)
 }
 
-// ChatCompletion handles POST /v1/chat/completions - Process chat completion requests
-func (h *CompletionHandler) ChatCompletion(ctx *fasthttp.RequestCtx) {
+// chatCompletion handles POST /v1/chat/completions - Process chat completion requests
+func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 	h.handleRequest(ctx, CompletionTypeChat)
 }
 
-// Embeddings handles POST /v1/embeddings - Process embeddings requests
-func (h *CompletionHandler) Embeddings(ctx *fasthttp.RequestCtx) {
+// embeddings handles POST /v1/embeddings - Process embeddings requests
+func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 	h.handleRequest(ctx, CompletionTypeEmbeddings)
 }
 
-// SpeechCompletion handles POST /v1/audio/speech - Process speech completion requests
-func (h *CompletionHandler) SpeechCompletion(ctx *fasthttp.RequestCtx) {
+// speechCompletion handles POST /v1/audio/speech - Process speech completion requests
+func (h *CompletionHandler) speechCompletion(ctx *fasthttp.RequestCtx) {
 	h.handleRequest(ctx, CompletionTypeSpeech)
 }
 
-// TranscriptionCompletion handles POST /v1/audio/transcriptions - Process transcription requests
-func (h *CompletionHandler) TranscriptionCompletion(ctx *fasthttp.RequestCtx) {
+// transcriptionCompletion handles POST /v1/audio/transcriptions - Process transcription requests
+func (h *CompletionHandler) transcriptionCompletion(ctx *fasthttp.RequestCtx) {
 	// Parse multipart form
 	form, err := ctx.MultipartForm()
 	if err != nil {
@@ -308,14 +309,11 @@ func (h *CompletionHandler) TranscriptionCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	modelParts := strings.SplitN(modelValues[0], "/", 2)
-	if len(modelParts) < 2 {
-		SendError(ctx, fasthttp.StatusBadRequest, "Model must be in the format of 'provider/model'", h.logger)
+	provider, modelName, err := ParseModel(modelValues[0])
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Model must be in the format of 'provider/model': %v", err), h.logger)
 		return
 	}
-
-	provider := modelParts[0]
-	modelName := modelParts[1]
 
 	// Extract file (required)
 	fileHeaders := form.File["file"]
@@ -415,25 +413,26 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 		return
 	}
 
-	model := strings.SplitN(req.Model, "/", 2)
-	if len(model) < 2 {
-		SendError(ctx, fasthttp.StatusBadRequest, "Model must be in the format of 'provider/model'", h.logger)
+	provider, modelName, err := ParseModel(req.Model)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Model must be in the format of 'provider/model': %v", err), h.logger)
 		return
 	}
 
-	provider := model[0]
-	modelName := model[1]
-
 	fallbacks := make([]schemas.Fallback, len(req.Fallbacks))
 	for i, fallback := range req.Fallbacks {
-		fallbackModel := strings.Split(fallback, "/")
-		if len(fallbackModel) != 2 {
+		fallbackProvider, fallbackModelName, err := ParseModel(fallback)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Fallback must be in the format of 'provider/model': %v", err), h.logger)
+			return
+		}
+		if fallbackProvider == "" || fallbackModelName == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, "Fallback must be in the format of 'provider/model'", h.logger)
 			return
 		}
 		fallbacks[i] = schemas.Fallback{
-			Provider: schemas.ModelProvider(fallbackModel[0]),
-			Model:    fallbackModel[1],
+			Provider: schemas.ModelProvider(fallbackProvider),
+			Model:    fallbackModelName,
 		}
 	}
 
@@ -464,17 +463,11 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 			ChatCompletionInput: &req.Messages,
 		}
 	case CompletionTypeEmbeddings:
-		if req.Input == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, "Input is required for embeddings completion", h.logger)
-			return
-		}
 		bifrostReq.Input = schemas.RequestInput{
-			EmbeddingInput: &schemas.EmbeddingInput{
-				Texts: []string{req.Input},
-			},
+			EmbeddingInput: &req.Input,
 		}
 	case CompletionTypeSpeech:
-		if req.Input == "" {
+		if req.Input.Text == nil {
 			SendError(ctx, fasthttp.StatusBadRequest, "Input is required for speech completion", h.logger)
 			return
 		}
@@ -484,7 +477,7 @@ func (h *CompletionHandler) handleRequest(ctx *fasthttp.RequestCtx, completionTy
 		}
 		bifrostReq.Input = schemas.RequestInput{
 			SpeechInput: &schemas.SpeechInput{
-				Input:          req.Input,
+				Input:          *req.Input.Text,
 				VoiceConfig:    req.Voice,
 				Instructions:   req.Instructions,
 				ResponseFormat: req.ResponseFormat,

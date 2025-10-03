@@ -17,20 +17,6 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// RequestType represents the type of request being made to a provider.
-type RequestType string
-
-const (
-	TextCompletionRequest       RequestType = "text_completion"
-	ChatCompletionRequest       RequestType = "chat_completion"
-	ChatCompletionStreamRequest RequestType = "chat_completion_stream"
-	EmbeddingRequest            RequestType = "embedding"
-	SpeechRequest               RequestType = "speech"
-	SpeechStreamRequest         RequestType = "speech_stream"
-	TranscriptionRequest        RequestType = "transcription"
-	TranscriptionStreamRequest  RequestType = "transcription_stream"
-)
-
 // ChannelMessage represents a message passed through the request channel.
 // It contains the request, response and error channels, and the request type.
 type ChannelMessage struct {
@@ -39,12 +25,13 @@ type ChannelMessage struct {
 	Response       chan *schemas.BifrostResponse
 	ResponseStream chan chan *schemas.BifrostStream
 	Err            chan schemas.BifrostError
-	Type           RequestType
+	Type           schemas.RequestType
 }
 
-// Bifrost manages providers and maintains sepcified open channels for concurrent processing.
+// Bifrost manages providers and maintains specified open channels for concurrent processing.
 // It handles request routing, provider management, and response processing.
 type Bifrost struct {
+	ctx                 context.Context
 	account             schemas.Account  // account interface
 	plugins             []schemas.Plugin // list of plugins
 	requestQueues       sync.Map         // provider request queues (thread-safe)
@@ -56,7 +43,6 @@ type Bifrost struct {
 	responseStreamPool  sync.Pool        // Pool for response stream channels, initial pool size is set in Init
 	pluginPipelinePool  sync.Pool        // Pool for PluginPipeline objects
 	logger              schemas.Logger   // logger instance, default logger is used if not provided
-	backgroundCtx       context.Context  // Shared background context for nil context handling
 	mcpManager          *MCPManager      // MCP integration manager (nil if MCP not configured)
 	dropExcessRequests  atomic.Bool      // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 }
@@ -82,29 +68,23 @@ var retryableStatusCodes = map[int]bool{
 	429: true, // Too Many Requests
 }
 
-// BifrostContextKey is a type for context keys used in Bifrost.
-type BifrostContextKey string
-
-// BifrostContextKeyRequestType is a context key for the request type.
-const BifrostContextKeyRequestType BifrostContextKey = "bifrost-request-type"
-
 // INITIALIZATION
 
 // Init initializes a new Bifrost instance with the given configuration.
 // It sets up the account, plugins, object pools, and initializes providers.
 // Returns an error if initialization fails.
 // Initial Memory Allocations happens here as per the initial pool size.
-func Init(config schemas.BifrostConfig) (*Bifrost, error) {
+func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	if config.Account == nil {
 		return nil, fmt.Errorf("account is required to initialize Bifrost")
 	}
 
 	bifrost := &Bifrost{
+		ctx:           ctx,
 		account:       config.Account,
 		plugins:       config.Plugins,
 		requestQueues: sync.Map{},
 		waitGroups:    sync.Map{},
-		backgroundCtx: context.Background(),
 	}
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
 
@@ -163,7 +143,7 @@ func Init(config schemas.BifrostConfig) (*Bifrost, error) {
 
 	// Initialize MCP manager if configured
 	if config.MCPConfig != nil {
-		mcpManager, err := newMCPManager(*config.MCPConfig, bifrost.logger)
+		mcpManager, err := newMCPManager(ctx, *config.MCPConfig, bifrost.logger)
 		if err != nil {
 			bifrost.logger.Warn(fmt.Sprintf("failed to initialize MCP manager: %v", err))
 		} else {
@@ -174,6 +154,11 @@ func Init(config schemas.BifrostConfig) (*Bifrost, error) {
 
 	// Create buffered channels for each provider and start workers
 	for _, providerKey := range providerKeys {
+		if strings.TrimSpace(string(providerKey)) == "" {
+			bifrost.logger.Warn("provider key is empty, skipping init")
+			continue
+		}
+
 		config, err := bifrost.account.GetConfigForProvider(providerKey)
 		if err != nil {
 			bifrost.logger.Warn(fmt.Sprintf("failed to get config for provider, skipping init: %v", err))
@@ -207,7 +192,7 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx context.Context, req *schemas.
 		}
 	}
 
-	return bifrost.handleRequest(ctx, req, TextCompletionRequest)
+	return bifrost.handleRequest(ctx, req, schemas.TextCompletionRequest)
 }
 
 // ChatCompletionRequest sends a chat completion request to the specified provider.
@@ -221,7 +206,7 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.
 		}
 	}
 
-	return bifrost.handleRequest(ctx, req, ChatCompletionRequest)
+	return bifrost.handleRequest(ctx, req, schemas.ChatCompletionRequest)
 }
 
 // ChatCompletionStreamRequest sends a chat completion stream request to the specified provider.
@@ -235,7 +220,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx context.Context, req *sc
 		}
 	}
 
-	return bifrost.handleStreamRequest(ctx, req, ChatCompletionStreamRequest)
+	return bifrost.handleStreamRequest(ctx, req, schemas.ChatCompletionStreamRequest)
 }
 
 // EmbeddingRequest sends an embedding request to the specified provider.
@@ -249,7 +234,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.Bifro
 		}
 	}
 
-	return bifrost.handleRequest(ctx, req, EmbeddingRequest)
+	return bifrost.handleRequest(ctx, req, schemas.EmbeddingRequest)
 }
 
 // SpeechRequest sends a speech request to the specified provider.
@@ -263,7 +248,7 @@ func (bifrost *Bifrost) SpeechRequest(ctx context.Context, req *schemas.BifrostR
 		}
 	}
 
-	return bifrost.handleRequest(ctx, req, SpeechRequest)
+	return bifrost.handleRequest(ctx, req, schemas.SpeechRequest)
 }
 
 // SpeechStreamRequest sends a speech stream request to the specified provider.
@@ -277,7 +262,7 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx context.Context, req *schemas.Bi
 		}
 	}
 
-	return bifrost.handleStreamRequest(ctx, req, SpeechStreamRequest)
+	return bifrost.handleStreamRequest(ctx, req, schemas.SpeechStreamRequest)
 }
 
 // TranscriptionRequest sends a transcription request to the specified provider.
@@ -291,7 +276,7 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx context.Context, req *schemas.B
 		}
 	}
 
-	return bifrost.handleRequest(ctx, req, TranscriptionRequest)
+	return bifrost.handleRequest(ctx, req, schemas.TranscriptionRequest)
 }
 
 // TranscriptionStreamRequest sends a transcription stream request to the specified provider.
@@ -305,7 +290,7 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *sch
 		}
 	}
 
-	return bifrost.handleStreamRequest(ctx, req, TranscriptionStreamRequest)
+	return bifrost.handleStreamRequest(ctx, req, schemas.TranscriptionStreamRequest)
 }
 
 // UpdateProviderConcurrency dynamically updates the queue size and concurrency for an existing provider.
@@ -338,14 +323,14 @@ func (bifrost *Bifrost) UpdateProviderConcurrency(providerKey schemas.ModelProvi
 	// Check if provider currently exists
 	oldQueueValue, exists := bifrost.requestQueues.Load(providerKey)
 	if !exists {
-		bifrost.logger.Debug(fmt.Sprintf("Provider %s not currently active, initializing with new configuration", providerKey))
+		bifrost.logger.Debug("provider %s not currently active, initializing with new configuration", providerKey)
 		// If provider doesn't exist, just prepare it with new configuration
 		return bifrost.prepareProvider(providerKey, providerConfig)
 	}
 
 	oldQueue := oldQueueValue.(chan ChannelMessage)
 
-	bifrost.logger.Debug(fmt.Sprintf("Gracefully stopping existing workers for provider %s", providerKey))
+	bifrost.logger.Debug("gracefully stopping existing workers for provider %s", providerKey)
 
 	// Step 1: Create new queue with updated buffer size
 	newQueue := make(chan ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize)
@@ -397,7 +382,7 @@ transferComplete:
 	// Wait for all transfer goroutines to complete
 	transferWaitGroup.Wait()
 	if transferredCount > 0 {
-		bifrost.logger.Info(fmt.Sprintf("Transferred %d buffered requests to new queue for provider %s", transferredCount, providerKey))
+		bifrost.logger.Info("transferred %d buffered requests to new queue for provider %s", transferredCount, providerKey)
 	}
 
 	// Step 3: Close the old queue to signal workers to stop
@@ -410,32 +395,32 @@ transferComplete:
 	waitGroup, exists := bifrost.waitGroups.Load(providerKey)
 	if exists {
 		waitGroup.(*sync.WaitGroup).Wait()
-		bifrost.logger.Debug(fmt.Sprintf("All workers for provider %s have stopped", providerKey))
+		bifrost.logger.Debug("all workers for provider %s have stopped", providerKey)
 	}
 
 	// Step 6: Create new wait group for the updated workers
 	bifrost.waitGroups.Store(providerKey, &sync.WaitGroup{})
 
 	// Step 7: Create provider instance
-	provider, err := bifrost.createProviderFromProviderKey(providerKey, providerConfig)
+	provider, err := bifrost.createBaseProvider(providerKey, providerConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create provider instance for %s: %v", providerKey, err)
 	}
 
 	// Step 8: Start new workers with updated concurrency
-	bifrost.logger.Debug(fmt.Sprintf("Starting %d new workers for provider %s with buffer size %d",
+	bifrost.logger.Debug("starting %d new workers for provider %s with buffer size %d",
 		providerConfig.ConcurrencyAndBufferSize.Concurrency,
 		providerKey,
-		providerConfig.ConcurrencyAndBufferSize.BufferSize))
+		providerConfig.ConcurrencyAndBufferSize.BufferSize)
 
 	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
 		waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
 		waitGroup := waitGroupValue.(*sync.WaitGroup)
 		waitGroup.Add(1)
-		go bifrost.requestWorker(provider, newQueue)
+		go bifrost.requestWorker(provider, providerConfig, newQueue)
 	}
 
-	bifrost.logger.Info(fmt.Sprintf("Successfully updated concurrency configuration for provider %s", providerKey))
+	bifrost.logger.Info("successfully updated concurrency configuration for provider %s", providerKey)
 	return nil
 }
 
@@ -448,7 +433,7 @@ func (bifrost *Bifrost) GetDropExcessRequests() bool {
 // This allows for hot-reloading of this configuration value.
 func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
 	bifrost.dropExcessRequests.Store(value)
-	bifrost.logger.Info(fmt.Sprintf("DropExcessRequests updated to: %v", value))
+	bifrost.logger.Info("drop_excess_requests updated to: %v", value)
 }
 
 // getProviderMutex gets or creates a mutex for the given provider
@@ -586,6 +571,7 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 func (bifrost *Bifrost) AddMCPClient(config schemas.MCPClientConfig) error {
 	if bifrost.mcpManager == nil {
 		manager := &MCPManager{
+			ctx:       bifrost.ctx,
 			clientMap: make(map[string]*MCPClient),
 			logger:    bifrost.logger,
 		}
@@ -661,10 +647,29 @@ func (bifrost *Bifrost) ReconnectMCPClient(name string) error {
 
 // PROVIDER MANAGEMENT
 
-// createProviderFromProviderKey creates a new provider instance based on the provider key.
-// It returns an error if the provider is not supported.
-func (bifrost *Bifrost) createProviderFromProviderKey(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
-	switch providerKey {
+// createBaseProvider creates a provider based on the base provider type
+func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
+	// Determine which provider type to create
+	targetProviderKey := providerKey
+
+	if config.CustomProviderConfig != nil {
+		// Validate custom provider config
+		if config.CustomProviderConfig.BaseProviderType == "" {
+			return nil, fmt.Errorf("custom provider config missing base provider type")
+		}
+
+		// Validate that base provider type is supported
+		if !IsSupportedBaseProvider(config.CustomProviderConfig.BaseProviderType) {
+			return nil, fmt.Errorf("unsupported base provider type: %s", config.CustomProviderConfig.BaseProviderType)
+		}
+
+		// Automatically set the custom provider key to the provider name
+		config.CustomProviderConfig.CustomProviderKey = string(providerKey)
+
+		targetProviderKey = config.CustomProviderConfig.BaseProviderType
+	}
+
+	switch targetProviderKey {
 	case schemas.OpenAI:
 		return providers.NewOpenAIProvider(config, bifrost.logger), nil
 	case schemas.Anthropic:
@@ -689,8 +694,12 @@ func (bifrost *Bifrost) createProviderFromProviderKey(providerKey schemas.ModelP
 		return providers.NewParasailProvider(config, bifrost.logger)
 	case schemas.Cerebras:
 		return providers.NewCerebrasProvider(config, bifrost.logger)
+	case schemas.Gemini:
+		return providers.NewGeminiProvider(config, bifrost.logger), nil
+	case schemas.OpenRouter:
+		return providers.NewOpenRouterProvider(config, bifrost.logger), nil
 	default:
-		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
+		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
 }
 
@@ -710,7 +719,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 	// Start specified number of workers
 	bifrost.waitGroups.Store(providerKey, &sync.WaitGroup{})
 
-	provider, err := bifrost.createProviderFromProviderKey(providerKey, config)
+	provider, err := bifrost.createBaseProvider(providerKey, config)
 	if err != nil {
 		return fmt.Errorf("failed to create provider for the given key: %v", err)
 	}
@@ -719,7 +728,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
 		waitGroup := waitGroupValue.(*sync.WaitGroup)
 		waitGroup.Add(1)
-		go bifrost.requestWorker(provider, queue)
+		go bifrost.requestWorker(provider, providerConfig, queue)
 	}
 
 	return nil
@@ -840,7 +849,7 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all non-streaming public API methods.
-func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostRequest, requestType RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	if err := validateRequest(req); err != nil {
 		err.Provider = req.Provider
 		return nil, err
@@ -848,11 +857,8 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 
 	// Handle nil context early to prevent blocking
 	if ctx == nil {
-		ctx = bifrost.backgroundCtx
+		ctx = bifrost.ctx
 	}
-
-	// Add request type to context
-	ctx = context.WithValue(ctx, BifrostContextKeyRequestType, requestType)
 
 	// Try the primary provider first
 	primaryResult, primaryErr := bifrost.tryRequest(req, ctx, requestType)
@@ -892,7 +898,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all streaming public API methods.
-func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.BifrostRequest, requestType RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.BifrostRequest, requestType schemas.RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if err := validateRequest(req); err != nil {
 		err.Provider = req.Provider
 		return nil, err
@@ -900,11 +906,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 
 	// Handle nil context early to prevent blocking
 	if ctx == nil {
-		ctx = bifrost.backgroundCtx
+		ctx = bifrost.ctx
 	}
-
-	// Add request type to context
-	ctx = context.WithValue(ctx, BifrostContextKeyRequestType, requestType)
 
 	// Try the primary provider first
 	primaryResult, primaryErr := bifrost.tryStreamRequest(req, ctx, requestType)
@@ -942,14 +945,20 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
-func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Context, requestType RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Context, requestType schemas.RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	queue, err := bifrost.getProviderQueue(req.Provider)
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
 
+	// Attach context keys to the context
+	ctx = attachContextKeys(ctx, req, requestType)
+
 	// Add MCP tools to request if MCP is configured and requested
-	if requestType != EmbeddingRequest && requestType != SpeechRequest && bifrost.mcpManager != nil {
+	if requestType != schemas.EmbeddingRequest &&
+		requestType != schemas.SpeechRequest &&
+		requestType != schemas.TranscriptionRequest &&
+		bifrost.mcpManager != nil {
 		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
 	}
 
@@ -1027,14 +1036,17 @@ func (bifrost *Bifrost) tryRequest(req *schemas.BifrostRequest, ctx context.Cont
 
 // tryStreamRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
-func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx context.Context, requestType RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx context.Context, requestType schemas.RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	queue, err := bifrost.getProviderQueue(req.Provider)
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
 
+	// Attach context keys to the context
+	ctx = attachContextKeys(ctx, req, requestType)
+
 	// Add MCP tools to request if MCP is configured and requested
-	if requestType != SpeechStreamRequest && requestType != TranscriptionStreamRequest && bifrost.mcpManager != nil {
+	if requestType != schemas.SpeechStreamRequest && requestType != schemas.TranscriptionStreamRequest && bifrost.mcpManager != nil {
 		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
 	}
 
@@ -1123,14 +1135,25 @@ func (bifrost *Bifrost) tryStreamRequest(req *schemas.BifrostRequest, ctx contex
 		bifrost.releaseChannelMessage(msg)
 		return stream, nil
 	case bifrostErrVal := <-msg.Err:
+		bifrost.logger.Warn("error while executing stream request: %v", bifrostErrVal.Error.Message)
+		// Marking final chunk
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+		// On error we will complete post-hooks
+		recoveredResp, recoveredErr := pipeline.RunPostHooks(&ctx, nil, &bifrostErrVal, len(bifrost.plugins))
 		bifrost.releaseChannelMessage(msg)
+		if recoveredErr != nil {
+			return nil, recoveredErr
+		}
+		if recoveredResp != nil {
+			return newBifrostMessageChan(recoveredResp), nil
+		}
 		return nil, &bifrostErrVal
 	}
 }
 
 // requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
-func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan ChannelMessage) {
+func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, queue chan ChannelMessage) {
 	defer func() {
 		if waitGroupValue, ok := bifrost.waitGroups.Load(provider.GetProviderKey()); ok {
 			waitGroup := waitGroupValue.(*sync.WaitGroup)
@@ -1144,11 +1167,18 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		var bifrostError *schemas.BifrostError
 		var err error
 
+		// Determine the base provider type for key requirement checks
+		baseProvider := provider.GetProviderKey()
+		if cfg := config.CustomProviderConfig; cfg != nil && cfg.BaseProviderType != "" {
+			baseProvider = cfg.BaseProviderType
+		}
+
 		key := schemas.Key{}
-		if providerRequiresKey(provider.GetProviderKey()) {
-			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, provider.GetProviderKey(), req.Model)
+		if providerRequiresKey(baseProvider) {
+			// Use the custom provider name for actual key selection, but pass base provider type for key validation
+			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, provider.GetProviderKey(), req.Model, baseProvider)
 			if err != nil {
-				bifrost.logger.Warn(fmt.Sprintf("Error selecting key for model %s: %v", req.Model, err))
+				bifrost.logger.Warn("error selecting key for model %s: %v", req.Model, err)
 				req.Err <- schemas.BifrostError{
 					IsBifrostError: false,
 					Error: schemas.ErrorField{
@@ -1160,25 +1190,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 			}
 		}
 
-		config, err := bifrost.account.GetConfigForProvider(provider.GetProviderKey())
-		if err != nil {
-			bifrost.logger.Warn(fmt.Sprintf("Error getting config for provider %s: %v", provider.GetProviderKey(), err))
-			req.Err <- schemas.BifrostError{
-				IsBifrostError: false,
-				Error: schemas.ErrorField{
-					Message: err.Error(),
-					Error:   err,
-				},
-			}
-			continue
-		}
-
 		// Track attempts
 		var attempts int
 
 		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
 		var postHookRunner schemas.PostHookRunner
-		if isStreamRequestType(req.Type) {
+		if IsStreamRequestType(req.Type) {
 			pipeline := bifrost.getPluginPipeline()
 			defer bifrost.releasePluginPipeline(pipeline)
 
@@ -1195,21 +1212,17 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
 			if attempts > 0 {
 				// Log retry attempt
-				bifrost.logger.Info(fmt.Sprintf(
-					"Retrying request (attempt %d/%d) for model %s: %s",
-					attempts, config.NetworkConfig.MaxRetries, req.Model,
-					bifrostError.Error.Message,
-				))
+				bifrost.logger.Info("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, req.Model, bifrostError.Error.Message)
 
 				// Calculate and apply backoff
 				backoff := calculateBackoff(attempts-1, config)
 				time.Sleep(backoff)
 			}
 
-			bifrost.logger.Debug(fmt.Sprintf("Attempting request for provider %s", provider.GetProviderKey()))
+			bifrost.logger.Debug("attempting request for provider %s", provider.GetProviderKey())
 
 			// Attempt the request
-			if isStreamRequestType(req.Type) {
+			if IsStreamRequestType(req.Type) {
 				stream, bifrostError = handleProviderStreamRequest(provider, &req, key, postHookRunner, req.Type)
 				if bifrostError != nil && !bifrostError.IsBifrostError {
 					break // Don't retry client errors
@@ -1221,7 +1234,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 				}
 			}
 
-			bifrost.logger.Debug(fmt.Sprintf("Request for provider %s completed", provider.GetProviderKey()))
+			bifrost.logger.Debug("request for provider %s completed", provider.GetProviderKey())
 
 			// Check if successful or if we should retry
 			if bifrostError == nil ||
@@ -1235,9 +1248,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		if bifrostError != nil {
 			// Add retry information to error
 			if attempts > 0 {
-				bifrost.logger.Warn(fmt.Sprintf("Request failed after %d %s",
-					attempts,
-					map[bool]string{true: "retries", false: "retry"}[attempts > 1]))
+				bifrost.logger.Warn("request failed after %d %s", attempts, map[bool]string{true: "retries", false: "retry"}[attempts > 1])
 			}
 			// Send error with context awareness to prevent deadlock
 			select {
@@ -1251,7 +1262,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 				bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
 			}
 		} else {
-			if isStreamRequestType(req.Type) {
+			if IsStreamRequestType(req.Type) {
 				// Send stream with context awareness to prevent deadlock
 				select {
 				case req.ResponseStream <- stream:
@@ -1279,21 +1290,21 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, queue chan Chan
 		}
 	}
 
-	bifrost.logger.Debug(fmt.Sprintf("Worker for provider %s exiting...", provider.GetProviderKey()))
+	bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
 }
 
 // handleProviderRequest handles the request to the provider based on the request type
-func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, reqType RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, reqType schemas.RequestType) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	switch reqType {
-	case TextCompletionRequest:
+	case schemas.TextCompletionRequest:
 		return provider.TextCompletion(req.Context, req.Model, key, *req.Input.TextCompletionInput, req.Params)
-	case ChatCompletionRequest:
+	case schemas.ChatCompletionRequest:
 		return provider.ChatCompletion(req.Context, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
-	case EmbeddingRequest:
+	case schemas.EmbeddingRequest:
 		return provider.Embedding(req.Context, req.Model, key, req.Input.EmbeddingInput, req.Params)
-	case SpeechRequest:
+	case schemas.SpeechRequest:
 		return provider.Speech(req.Context, req.Model, key, req.Input.SpeechInput, req.Params)
-	case TranscriptionRequest:
+	case schemas.TranscriptionRequest:
 		return provider.Transcription(req.Context, req.Model, key, req.Input.TranscriptionInput, req.Params)
 	default:
 		return nil, &schemas.BifrostError{
@@ -1306,13 +1317,13 @@ func handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key s
 }
 
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
-func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, reqType RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, reqType schemas.RequestType) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	switch reqType {
-	case ChatCompletionStreamRequest:
+	case schemas.ChatCompletionStreamRequest:
 		return provider.ChatCompletionStream(req.Context, postHookRunner, req.Model, key, *req.Input.ChatCompletionInput, req.Params)
-	case SpeechStreamRequest:
+	case schemas.SpeechStreamRequest:
 		return provider.SpeechStream(req.Context, postHookRunner, req.Model, key, req.Input.SpeechInput, req.Params)
-	case TranscriptionStreamRequest:
+	case schemas.TranscriptionStreamRequest:
 		return provider.TranscriptionStream(req.Context, postHookRunner, req.Model, key, req.Input.TranscriptionInput, req.Params)
 	default:
 		return nil, &schemas.BifrostError{
@@ -1334,7 +1345,7 @@ func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostR
 		req, shortCircuit, err = plugin.PreHook(ctx, req)
 		if err != nil {
 			p.preHookErrors = append(p.preHookErrors, err)
-			p.logger.Warn(fmt.Sprintf("Error in PreHook for plugin %s: %v", plugin.GetName(), err))
+			p.logger.Warn("error in PreHook for plugin %s: %v", plugin.GetName(), err)
 		}
 		p.executedPreHooks = i + 1
 		if shortCircuit != nil {
@@ -1361,7 +1372,7 @@ func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.Bifros
 		resp, bifrostErr, err = plugin.PostHook(ctx, resp, bifrostErr)
 		if err != nil {
 			p.postHookErrors = append(p.postHookErrors, err)
-			p.logger.Warn(fmt.Sprintf("Error in PostHook for plugin %s: %v", plugin.GetName(), err))
+			p.logger.Warn("error in PostHook for plugin %s: %v", plugin.GetName(), err)
 		}
 		// If a plugin recovers from an error (sets bifrostErr to nil and sets resp), allow that
 		// If a plugin invalidates a response (sets resp to nil and sets bifrostErr), allow that
@@ -1404,7 +1415,7 @@ func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 
 // getChannelMessage gets a ChannelMessage from the pool and configures it with the request.
 // It also gets response and error channels from their respective pools.
-func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType RequestType) *ChannelMessage {
+func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType schemas.RequestType) *ChannelMessage {
 	// Get channels from pool
 	responseChan := bifrost.responseChannelPool.Get().(chan *schemas.BifrostResponse)
 	errorChan := bifrost.errorChannelPool.Get().(chan schemas.BifrostError)
@@ -1427,7 +1438,7 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest, reqType Re
 	msg.Type = reqType
 
 	// Conditionally allocate ResponseStream for streaming requests only
-	if isStreamRequestType(reqType) {
+	if IsStreamRequestType(reqType) {
 		responseStreamChan := bifrost.responseStreamPool.Get().(chan chan *schemas.BifrostStream)
 		// Clear any previous values to avoid leaking between requests
 		select {
@@ -1465,10 +1476,10 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 
 // selectKeyFromProviderForModel selects an appropriate API key for a given provider and model.
 // It uses weighted random selection if multiple keys are available.
-func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
+func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider) (schemas.Key, error) {
 	// Check if key has been set in the context explicitly
 	if ctx != nil {
-		key, ok := (*ctx).Value(schemas.BifrostContextKey).(schemas.Key)
+		key, ok := (*ctx).Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
 		if ok {
 			return key, nil
 		}
@@ -1486,16 +1497,16 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 	// filter out keys which dont support the model, if the key has no models, it is supported for all models
 	var supportedKeys []schemas.Key
 	for _, key := range keys {
-		modelSupported := (slices.Contains(key.Models, model) && (strings.TrimSpace(key.Value) != "" || canProviderKeyValueBeEmpty(providerKey))) || len(key.Models) == 0
+		modelSupported := (slices.Contains(key.Models, model) && (strings.TrimSpace(key.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType))) || len(key.Models) == 0
 
 		// Additional deployment checks for Azure and Bedrock
 		deploymentSupported := true
-		if providerKey == schemas.Azure && key.AzureKeyConfig != nil {
+		if baseProviderType == schemas.Azure && key.AzureKeyConfig != nil {
 			// For Azure, check if deployment exists for this model
 			if len(key.AzureKeyConfig.Deployments) > 0 {
 				_, deploymentSupported = key.AzureKeyConfig.Deployments[model]
 			}
-		} else if providerKey == schemas.Bedrock && key.BedrockKeyConfig != nil {
+		} else if baseProviderType == schemas.Bedrock && key.BedrockKeyConfig != nil {
 			// For Bedrock, check if deployment exists for this model
 			if len(key.BedrockKeyConfig.Deployments) > 0 {
 				_, deploymentSupported = key.BedrockKeyConfig.Deployments[model]
@@ -1508,7 +1519,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 	}
 
 	if len(supportedKeys) == 0 {
-		if providerKey == schemas.Azure || providerKey == schemas.Bedrock {
+		if baseProviderType == schemas.Azure || baseProviderType == schemas.Bedrock {
 			return schemas.Key{}, fmt.Errorf("no keys found that support model/deployment: %s", model)
 		}
 		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)
@@ -1541,12 +1552,10 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, prov
 	return supportedKeys[0], nil
 }
 
-// CLEANUP
-
-// Cleanup gracefully stops all workers when triggered.
+// Shutdown gracefully stops all workers when triggered.
 // It closes all request channels and waits for workers to exit.
-func (bifrost *Bifrost) Cleanup() {
-	bifrost.logger.Info("Graceful Cleanup Initiated - Closing all request channels...")
+func (bifrost *Bifrost) Shutdown() {
+	bifrost.logger.Info("closing all request channels...")
 
 	// Close all provider queues to signal workers to stop
 	bifrost.requestQueues.Range(func(key, value interface{}) bool {
@@ -1576,6 +1585,4 @@ func (bifrost *Bifrost) Cleanup() {
 			bifrost.logger.Warn(fmt.Sprintf("Error cleaning up plugin: %s", err.Error()))
 		}
 	}
-
-	bifrost.logger.Info("Graceful Cleanup Completed")
 }

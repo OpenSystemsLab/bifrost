@@ -14,10 +14,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
-	"github.com/maximhq/bifrost/plugins/redis"
-	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/plugins/telemetry"
+	"github.com/maximhq/bifrost/plugins/semanticcache"
+	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/valyala/fasthttp"
 )
 
@@ -75,15 +75,18 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 	if requestID == "" {
 		requestID = uuid.New().String()
 	}
-	bifrostCtx = context.WithValue(bifrostCtx, logging.ContextKey("request-id"), requestID)
+	bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey("request-id"), requestID)
+
+	// Initialize tags map for collecting maxim tags
+	maximTags := make(map[string]string)
 
 	// Then process other headers
-	ctx.Request.Header.VisitAll(func(key, value []byte) {
+	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 
 		if strings.HasPrefix(keyStr, "x-bf-prom-") {
 			labelName := strings.TrimPrefix(keyStr, "x-bf-prom-")
-			bifrostCtx = context.WithValue(bifrostCtx, telemetry.PrometheusContextKey(labelName), string(value))
+			bifrostCtx = context.WithValue(bifrostCtx, telemetry.ContextKey(labelName), string(value))
 		}
 
 		if strings.HasPrefix(keyStr, "x-bf-maxim-") {
@@ -100,6 +103,24 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 			if labelName == string(maxim.SessionIDKey) {
 				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
 			}
+
+			if labelName == string(maxim.TraceNameKey) {
+				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
+			}
+
+			if labelName == string(maxim.GenerationNameKey) {
+				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
+			}
+
+			if labelName == string(maxim.LogRepoIDKey) {
+				bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(labelName), string(value))
+			}
+
+			// apart from these all headers starting with x-bf-maxim- are keys for tags
+			// collect them in the maximTags map
+			if labelName != string(maxim.GenerationIDKey) && labelName != string(maxim.TraceIDKey) && labelName != string(maxim.SessionIDKey) && labelName != string(maxim.TraceNameKey) && labelName != string(maxim.GenerationNameKey) && labelName != string(maxim.LogRepoIDKey) {
+				maximTags[labelName] = string(value)
+			}
 		}
 
 		if strings.HasPrefix(keyStr, "x-bf-mcp-") {
@@ -107,23 +128,23 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 
 			if labelName == "include-clients" || labelName == "exclude-clients" || labelName == "include-tools" || labelName == "exclude-tools" {
 				bifrostCtx = context.WithValue(bifrostCtx, ContextKey("mcp-"+labelName), string(value))
-				return
+				return true
 			}
 		}
 
 		// Handle governance headers (x-bf-team, x-bf-user, x-bf-customer)
 		if keyStr == "x-bf-team" || keyStr == "x-bf-user" || keyStr == "x-bf-customer" {
-			bifrostCtx = context.WithValue(bifrostCtx, ContextKey(keyStr), string(value))
+			bifrostCtx = context.WithValue(bifrostCtx, governance.ContextKey(keyStr), string(value))
 		}
 
 		// Handle virtual key header (x-bf-vk)
 		if keyStr == "x-bf-vk" {
-			bifrostCtx = context.WithValue(bifrostCtx, ContextKey(keyStr), string(value))
+			bifrostCtx = context.WithValue(bifrostCtx, governance.ContextKey(keyStr), string(value))
 		}
 
 		// Handle cache key header (x-bf-cache-key)
 		if keyStr == "x-bf-cache-key" {
-			bifrostCtx = context.WithValue(bifrostCtx, redis.ContextKey("request-cache-key"), string(value))
+			bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheKey, string(value))
 		}
 
 		// Handle cache TTL header (x-bf-cache-ttl)
@@ -142,11 +163,42 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 			}
 
 			if err == nil {
-				bifrostCtx = context.WithValue(bifrostCtx, redis.ContextKey("request-cache-ttl"), ttlDuration)
+				bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheTTLKey, ttlDuration)
 			}
 			// If both parsing attempts fail, we silently ignore the header and use default TTL
 		}
+
+		if keyStr == "x-bf-cache-threshold" {
+			threshold, err := strconv.ParseFloat(string(value), 64)
+			if err == nil {
+				// Clamp threshold to the inclusive range [0.0, 1.0]
+				if threshold < 0.0 {
+					threshold = 0.0
+				} else if threshold > 1.0 {
+					threshold = 1.0
+				}
+				bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheThresholdKey, threshold)
+			}
+			// If parsing fails, silently ignore the header (no context value set)
+		}
+
+		if keyStr == "x-bf-cache-type" {
+			bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheTypeKey, semanticcache.CacheType(string(value)))
+		}
+
+		if keyStr == "x-bf-cache-no-store" {
+			if valueStr := string(value); valueStr == "true" {
+				bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheNoStoreKey, true)
+			}
+		}
+
+		return true
 	})
+
+	// Store the collected maxim tags in the context
+	if len(maximTags) > 0 {
+		bifrostCtx = context.WithValue(bifrostCtx, maxim.ContextKey(maxim.TagsKey), maximTags)
+	}
 
 	if allowDirectKeys {
 		// Extract API key from Authorization header (Bearer format) or x-api-key header
@@ -169,9 +221,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 
 		// Check x-api-key header if no valid Authorization header found (Anthropic style)
 		if apiKey == "" {
-			xApiKey := string(ctx.Request.Header.Peek("x-api-key"))
-			if xApiKey != "" {
-				apiKey = strings.TrimSpace(xApiKey)
+			xAPIKey := string(ctx.Request.Header.Peek("x-api-key"))
+			if xAPIKey != "" {
+				apiKey = strings.TrimSpace(xAPIKey)
 			}
 		}
 
@@ -183,7 +235,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 				Models: []string{}, // Empty models list - will be validated by provider
 				Weight: 1.0,        // Default weight
 			}
-			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey, key)
+			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
 
