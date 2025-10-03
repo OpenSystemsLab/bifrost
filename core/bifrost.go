@@ -1219,7 +1219,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				time.Sleep(backoff)
 			}
 
-			bifrost.logger.Debug("attempting request for provider %s", provider.GetProviderKey())
+			bifrost.logger.Debug("attempting request for provider %s model %s type %s", provider.GetProviderKey(), req.Model, req.Type)
 
 			// Attempt the request
 			if IsStreamRequestType(req.Type) {
@@ -1234,7 +1234,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 			}
 
-			bifrost.logger.Debug("request for provider %s completed", provider.GetProviderKey())
+			bifrost.logger.Debug("request for provider %s model %s type %s completed", provider.GetProviderKey(), req.Model, req.Type)
 
 			// Check if successful or if we should retry
 			if bifrostError == nil ||
