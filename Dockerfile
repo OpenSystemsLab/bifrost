@@ -25,8 +25,12 @@ RUN apk add --no-cache upx gcc musl-dev sqlite-dev
 ENV CGO_ENABLED=1 GOOS=linux
 
 # Copy source code and dependencies
-COPY . /app/
-RUN cat go.mod && go mod download
+COPY core /app/core
+COPY framework /app/framework
+COPY transports /app/transports
+COPY plugins /app/plugins
+
+RUN ls -la /app && cat go.mod && go mod download
 
 
 COPY --from=ui-builder /app/out ./bifrost-http/ui

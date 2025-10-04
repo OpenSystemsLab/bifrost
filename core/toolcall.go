@@ -47,8 +47,12 @@ func (bifrost *Bifrost) handleToolCallsInResponse(
 	for _, toolCall := range toolCalls {
 		toolMsg, err := bifrost.mcpManager.executeTool(req.Context, toolCall)
 		if err != nil {
+			toolName := "unknown"
+			if toolCall.Function.Name != nil {
+				toolName = *toolCall.Function.Name
+			}
 			bifrost.logger.Warn("Failed to execute tool call %s: %v",
-				*toolCall.Function.Name, err)
+				toolName, err)
 			// Create error response for this tool
 			errorMsg := fmt.Sprintf("Error executing tool: %v", err)
 			toolMsg = &schemas.BifrostMessage{
@@ -144,8 +148,12 @@ func (bifrost *Bifrost) interceptToolCalls(
 		for _, toolCall := range toolCalls {
 			toolMsg, err := bifrost.mcpManager.executeTool(req.Context, toolCall)
 			if err != nil {
+				toolName := "unknown"
+				if toolCall.Function.Name != nil {
+					toolName = *toolCall.Function.Name
+				}
 				bifrost.logger.Warn("Failed to execute tool call %s: %v",
-					*toolCall.Function.Name, err)
+					toolName, err)
 				// Create error response for this tool
 				errorMsg := fmt.Sprintf("Error executing tool: %v", err)
 				toolMsg = &schemas.BifrostMessage{

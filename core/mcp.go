@@ -102,6 +102,8 @@ func newMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 		}
 	}
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
+	manager.logger.Info(MCPLogPrefix + " Tools call patching enabled")
+
 	return manager, nil
 }
 

@@ -411,7 +411,7 @@ func main() {
 	// Eventually same flow will be used for third party plugins
 	for _, plugin := range config.Plugins {
 		if !plugin.Enabled {
- 			logger.Debug("plugin %s is disabled, skipping initialization", plugin.Name)
+			logger.Debug("plugin %s is disabled, skipping initialization", plugin.Name)
 			continue
 		}
 		switch strings.ToLower(plugin.Name) {

@@ -67,3 +67,7 @@ temp/
 # Go workspaces (local only)
 go.work
 go.work.sum
+
+plans
+
+config.json
