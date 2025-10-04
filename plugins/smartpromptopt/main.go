@@ -142,7 +142,7 @@ func (p *SmartPromptOptPlugin) logf(level schemas.LogLevel, corrID string, forma
 	case schemas.LogLevelWarn:
 		p.logger.Warn(msg)
 	case schemas.LogLevelError:
-		p.logger.Error(fmt.Errorf("%s", msg))
+		p.logger.Error(msg)
 	}
 }
 
