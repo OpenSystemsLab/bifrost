@@ -1,21 +1,12 @@
 # Makefile for Bifrost
 
 # Variables
-HOST ?= 0.0.0.0
-PORT ?= 8888
+HOST ?= localhost
+PORT ?= 8080
 APP_DIR ?=
 PROMETHEUS_LABELS ?=
 LOG_STYLE ?= json
-LOG_LEVEL ?= debug
-
-# Docker variables
-DOCKER_REGISTRY ?= ghcr.io/opensystemslab
-IMAGE_NAME ?= bifrost
-GIT_SHA ?= $(shell git rev-parse --short HEAD)
-DOCKER_PLATFORM ?= linux/amd64
-DOCKER_TAG ?= sha-$(GIT_SHA)
-GITOPS_REPO ?= $(HOME)/github/AI/open-webui-gitops
-DEPLOYMENT_FILE ?= apps/base/bifrost.yaml
+LOG_LEVEL ?= info
 
 # Colors for output
 RED=\033[0;31m
@@ -25,7 +16,7 @@ BLUE=\033[0;34m
 CYAN=\033[0;36m
 NC=\033[0m # No Color
 
-.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs docker-build docker-build-sha docker-push docker-build-and-push update-deployment deploy
+.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs docker-build
 
 all: help
 
@@ -39,19 +30,9 @@ help: ## Show this help message
 	@echo "  HOST              Server host (default: localhost)"
 	@echo "  PORT              Server port (default: 8080)"
 	@echo "  PROMETHEUS_LABELS Labels for Prometheus metrics"
-	@echo "  LOG_STYLE         Logger output format: json|pretty (default: json)"
-	@echo "  LOG_LEVEL         Logger level: debug|info|warn|error (default: info)"
+	@echo "  LOG_STYLE Logger output format: json|pretty (default: json)"
+	@echo "  LOG_LEVEL Logger level: debug|info|warn|error (default: info)"
 	@echo "  APP_DIR           App data directory inside container (default: /app/data)"
-	@echo ""
-	@echo "$(YELLOW)Docker Build Variables:$(NC)"
-	@echo "  DOCKER_REGISTRY   Docker registry (default: ghcr.io/opensystemslab)"
-	@echo "  IMAGE_NAME        Image name (default: bifrost)"
-	@echo "  DOCKER_TAG        Image tag (default: sha-<git-sha>)"
-	@echo "  DOCKER_PLATFORM   Build platform (default: linux/amd64)"
-	@echo ""
-	@echo "$(YELLOW)GitOps Variables:$(NC)"
-	@echo "  GITOPS_REPO       Path to GitOps repo (default: ~/github/AI/open-webui-gitops)"
-	@echo "  DEPLOYMENT_FILE   Deployment file path (default: apps/base/bifrost.yaml)"
 
 install-ui:
 	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
@@ -103,23 +84,6 @@ docker-build: build-ui ## Build Docker image
 docker-run: ## Run Docker container
 	@echo "$(GREEN)Running Docker container...$(NC)"
 	@docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data  bifrost
-
-docker-build-sha: build-ui ## Build Docker image with SHA tag for specific platform
-	@echo "$(GREEN)Building Docker image for $(DOCKER_PLATFORM) with SHA tag...$(NC)"
-	@echo "$(YELLOW)Registry: $(DOCKER_REGISTRY)/$(IMAGE_NAME)$(NC)"
-	@echo "$(YELLOW)Tag: $(DOCKER_TAG)$(NC)"
-	@echo "$(YELLOW)Platform: $(DOCKER_PLATFORM)$(NC)"
-	@docker buildx build --platform $(DOCKER_PLATFORM) -f transports/Dockerfile -t $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(DOCKER_TAG) .
-	@echo "$(GREEN)Docker image built: $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(DOCKER_TAG)$(NC)"
-
-docker-push: ## Push Docker image to registry
-	@echo "$(GREEN)Pushing Docker image...$(NC)"
-	@echo "$(YELLOW)Pushing: $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(DOCKER_TAG)$(NC)"
-	@docker push $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(DOCKER_TAG)
-	@echo "$(GREEN)Docker image pushed: $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(DOCKER_TAG)$(NC)"
-
-docker-build-and-push: docker-build-sha docker-push ## Build and push Docker image with SHA tag
-	@echo "$(GREEN)Build and push complete: $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(DOCKER_TAG)$(NC)"
 
 docs: ## Prepare local docs
 	@echo "$(GREEN)Preparing local docs...$(NC)"
@@ -208,33 +172,3 @@ work-init: ## Create local go.work to use local modules for development (legacy)
 work-clean: ## Remove local go.work
 	@rm -f go.work go.work.sum || true
 	@echo "$(GREEN)Removed local go.work files$(NC)"
-
-update-deployment: ## Update GitOps deployment with current SHA tag
-	@echo "$(GREEN)Updating deployment file with image tag: $(DOCKER_TAG)$(NC)"
-	@if [ ! -f "$(GITOPS_REPO)/$(DEPLOYMENT_FILE)" ]; then \
-		echo "$(RED)❌ Deployment file not found: $(GITOPS_REPO)/$(DEPLOYMENT_FILE)$(NC)"; \
-		exit 1; \
-	fi
-	@cd $(GITOPS_REPO) && sed -i.bak "s|image: $(DOCKER_REGISTRY)/$(IMAGE_NAME):sha-.*|image: $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(DOCKER_TAG)|g" "$(DEPLOYMENT_FILE)"
-	@if cd $(GITOPS_REPO) && grep -q "$(DOCKER_TAG)" "$(DEPLOYMENT_FILE)"; then \
-		echo "$(GREEN)✅ Successfully updated deployment file$(NC)"; \
-		echo "$(YELLOW)New image: $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(DOCKER_TAG)$(NC)"; \
-		echo "$(CYAN)Changes:$(NC)"; \
-		cd $(GITOPS_REPO) && git diff "$(DEPLOYMENT_FILE)" || true; \
-	else \
-		echo "$(RED)❌ Failed to update deployment file$(NC)"; \
-		exit 1; \
-	fi
-
-deploy: docker-build-and-push update-deployment ## Complete build, push, and deployment update workflow
-	@echo "$(GREEN)🚀 Complete deployment workflow finished!$(NC)"
-	@echo ""
-	@echo "$(YELLOW)Summary:$(NC)"
-	@echo "  ✅ Built image: $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(DOCKER_TAG)"
-	@echo "  ✅ Pushed to registry: $(DOCKER_REGISTRY)"
-	@echo "  ✅ Updated deployment: $(GITOPS_REPO)/$(DEPLOYMENT_FILE)"
-	@echo ""
-	@echo "$(CYAN)Next steps:$(NC)"
-	@echo "  1. Review the changes: cd $(GITOPS_REPO) && git diff"
-	@echo "  2. Commit and push: cd $(GITOPS_REPO) && git add $(DEPLOYMENT_FILE) && git commit -m 'chore: update bifrost to $(DOCKER_TAG)' && git push"
-	@echo "  3. Monitor FluxCD sync: kubectl get pods -n bifrost -l app=bifrost"
