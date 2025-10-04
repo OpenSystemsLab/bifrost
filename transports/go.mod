@@ -7,11 +7,6 @@ toolchain go1.24.3
 replace (
 	github.com/maximhq/bifrost/core => ../core
 	github.com/maximhq/bifrost/framework => ../framework
-	github.com/maximhq/bifrost/plugins/governance => ../plugins/governance
-	github.com/maximhq/bifrost/plugins/logging => ../plugins/logging
-	github.com/maximhq/bifrost/plugins/maxim => ../plugins/maxim
-	github.com/maximhq/bifrost/plugins/semanticcache => ../plugins/semanticcache
-	github.com/maximhq/bifrost/plugins/telemetry => ../plugins/telemetry
 )
 require (
 	github.com/bytedance/sonic v1.14.0
