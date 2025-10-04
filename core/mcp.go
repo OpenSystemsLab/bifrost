@@ -996,7 +996,7 @@ func (m *MCPManager) createHTTPConnection(config schemas.MCPClientConfig) (*clie
 	}
 
 	// Create StreamableHTTP transport
-	httpTransport, err := transport.NewStreamableHTTP(*config.ConnectionString)
+	httpTransport, err := transport.NewStreamableHTTP(*config.ConnectionString, transport.WithHTTPTimeout(15*time.Second))
 	if err != nil {
 		return nil, MCPClientConnectionInfo{}, fmt.Errorf("failed to create HTTP transport: %w", err)
 	}

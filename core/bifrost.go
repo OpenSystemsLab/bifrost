@@ -1227,11 +1227,25 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				if bifrostError != nil && !bifrostError.IsBifrostError {
 					break // Don't retry client errors
 				}
+
+				// Intercept and handle tool calls from the stream
+				stream, bifrostError = bifrost.interceptToolCalls(stream, &req, provider, key, postHookRunner)
+				if bifrostError != nil {
+					break
+				}
+
 			} else {
 				result, bifrostError = handleProviderRequest(provider, &req, key, req.Type)
 				if bifrostError != nil {
 					break // Don't retry client errors
 				}
+
+				// Handle tool calls in non-streaming responses
+				result, bifrostError = bifrost.handleToolCallsInResponse(result, &req, provider, key)
+				if bifrostError != nil {
+					break
+				}
+
 			}
 
 			bifrost.logger.Debug("request for provider %s model %s type %s completed", provider.GetProviderKey(), req.Model, req.Type)
